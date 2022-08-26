@@ -1,0 +1,258 @@
+---
+title: "Reproducibility test"
+author: "ross"
+date: "8/25/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs_fxns}
+options(rlib_downstream_check = FALSE)
+library(drc)
+library(broom)
+library(lubridate)
+library(tidyverse)
+
+# Function to pivot IPAM data to long form with column for AOI
+ipam_convert <- function(data) {
+  data %>% select_if(~ !any(is.na(.))) %>%
+  pivot_longer(cols = starts_with("f") | starts_with("y")) %>%
+  separate(name, into = c("var", "aoi"), sep = "(?<=[A-Za-z_])(?=[0-9])")
+}
+```
+
+# Import data
+```{r import_data}
+# Import metadata: order in which racks PAMmed, and order of genets on racks
+genetmd <- readxl::read_xlsx("data/reproducibility/genet_map.xlsx") %>%
+  mutate(date = as_date(date))
+pammd <- readxl::read_xlsx("data/reproducibility/pam_order.xlsx") %>%
+  mutate(file_id = paste0(file_id, ".csv"),
+         date = as_date(date))
+
+# Import PAM data
+# List PAM files from 2021-09-06
+pamfiles1 <- list.files(path = "data/reproducibility/PAM_data/20210906", pattern = "*.csv", full.names = T)
+pamfiles2 <- list.files(path = "data/reproducibility/PAM_data/20210908", pattern = "*.csv", full.names = T)
+pamfiles <- c(pamfiles2, pamfiles1)
+
+# Import data from each file
+pam1 <- pamfiles %>%
+  map_dfr(read_delim, delim = ";", .id = "file_id") %>%
+  janitor::clean_names() %>%
+  mutate(file_id = basename(pamfiles[as.numeric(file_id)]),
+         date = as_date(date, format = "%d.%m.%y"))
+
+# For files that have multiple sat pulses -- keep the last one only
+pam1 <- pam1 %>%
+  group_by(file_id, date) %>%
+  filter(no == max(no)) %>%
+  ungroup()
+
+# For each source file, convert to long form data with F, FM, and YII for each AOI
+pam1 <- pam1 %>%
+  nest(-file_id, -date) %>%
+  mutate(data2 = map(data, ipam_convert)) %>%
+  unnest(data2) %>%
+  select(file_id, date, time, aoi, var, value)
+
+# Join PAM data with rack order information (which PAM file corresponds to which rack of corals)
+pam <- full_join(pam1, pammd)
+
+# Join PAM data with coral genet and temperature treatment information (which AOI corresponds to which coral)
+pam <- genetmd %>%
+  rename(aoi = position) %>%
+  full_join(pam)
+```
+
+# Analyze Fv/Fm
+```{r}
+# Get Fv/Fm data and tidy
+df <- pam %>%
+  mutate(max_temp = as.numeric(temp)) %>%
+  pivot_wider(names_from = var, values_from = value) %>%
+  mutate(fvfmraw = y_ii_, fvfm = y_ii_) %>%
+  select(geno = genet, nursery, max_temp, f, fm, fvfmraw, fvfm)
+
+
+# Define function to fit 3-parameter LL model to data and return NULL if fitting error
+ll3 <- function(data) {
+  drm(fvfm ~ max_temp, data = data, 
+      fct = LL.3(names = c("hill", "max", "ED50")),
+      upperl = c(1000, 1, 100),
+      lowerl = c(0, 0, 0))}
+tryll3 <- possibly(ll3, otherwise = NULL)
+
+# Fit model to each coral, get parameters, fitted values, and residuals
+initmods <- df %>%
+  nest(data = c(max_temp, f, fm, fvfmraw, fvfm)) %>%
+  # Fit the model to each coral
+  mutate(ll3 = map(data, tryll3)) %>%
+  # Get model parameters and fitted values/residuals
+  mutate(pars = map(ll3, tidy),
+         pred = map2(ll3, data, ~augment(.x, drop_na(.y, fvfm))))
+
+# Extract ed50 parameter values from model fits
+ed50 <- initmods %>% 
+  select(nursery, geno, pars) %>%
+  unnest(pars) %>%
+  filter(term == "ED50")
+
+# Collect raw data, fitted values, and diagnostics
+vals <- initmods %>%
+  select(nursery, geno, pred) %>%
+  unnest(pred) %>%
+  full_join(ed50) %>%
+  full_join(df) %>%
+  rename(ed50 = estimate) %>%
+  mutate(problem = "none")
+
+# Identify problematic data points based on cook's distance and residuals
+counts <- vals %>%
+  group_by(nursery, geno) %>%
+  summarise(n = sum(!is.na(fvfm)))
+dff <- vals %>%
+  left_join(counts) %>%
+  group_by(nursery, geno) %>%
+  mutate(resid.thresh = 2*sd(.resid, na.rm = T)) %>%  # Calculate residual threshold as 2 standard deviations
+  mutate(cooksd.thresh = 4/n) %>%   # Calculate cook's distance threshold as 4/n
+  mutate(max_to_remove = floor(n * 0.2)) %>%
+  ungroup() %>%
+  mutate(problem = case_when(.cooksd > cooksd.thresh & .resid > 0 ~ "high cook's distance",
+                             .resid > resid.thresh ~ "high residual",
+                             TRUE ~ "none")) %>%
+  group_by(nursery, geno, outlier = problem %in% c("high cook's distance", "high residual")) %>%
+  mutate(n.outliers = n(),
+         rank.out = order(.cooksd, decreasing = TRUE)) %>%
+  ungroup() %>%
+  mutate(fvfm = case_when(outlier & rank.out <= max_to_remove ~ NA_real_,
+                          TRUE ~ fvfm))
+
+
+# Refit models without problematic points
+fmods <- dff %>%
+  select(nursery, geno, max_temp, f, fm, fvfmraw, problem, fvfm) %>%
+  nest(data = c(max_temp, f, fm, fvfmraw, fvfm, problem)) %>%
+  # Fit the model to each coral
+  mutate(ll3 = map(data, tryll3)) %>%
+  # Get model parameters and fitted values/residuals
+  mutate(pars = map(ll3, tidy),
+         pred = map2(ll3, data, ~augment(.x, drop_na(.y, fvfm))))
+
+# Extract ed50 parameter values from model fits
+fed50 <- fmods %>%
+  select(nursery, geno, pars) %>%
+  unnest(pars) %>%
+  filter(term == "ED50")
+
+# Collect raw data, fitted values, and ed50 estimates
+fvals <- fmods %>%
+  select(nursery, geno, pred) %>%
+  unnest(pred) %>%
+  full_join(fed50) %>%
+  full_join(select(dff, nursery, geno, max_temp, f, fm, fvfmraw, problem, fvfm)) %>%
+  rename(ed50 = estimate)
+```
+
+```{r plot, fig.width = 10, fig.height = 10, echo = FALSE}
+# Define function to plot raw data, fitted values, and ed50 for each genotype
+plotfits <- function(data) {
+  ggplot(data = data, aes(x = max_temp)) + 
+    geom_point(pch = 4, size = 1.25,
+               aes(y = fvfmraw, color = factor(problem, levels = c("none", "no  signal",
+                                              "abnormally high",  
+                                              "abnormally high w/ low Ft",  
+                                              "high residual", "high cook's distance")))) + 
+    geom_point(aes(y = fvfm), pch = 1, size = 2) + 
+    geom_line(data = drop_na(data, .fitted), 
+              aes(y = .fitted)) + 
+    geom_vline(data = distinct(data, nursery, geno, ed50),
+               aes(xintercept = ed50), 
+               lwd = 0.2, lty = 2) +
+    geom_text(data = distinct(data, nursery, geno, ed50),
+              aes(x = ed50, y = 0.05, label = round(ed50, 2)), 
+              hjust = 1, nudge_x = -0.2, size = 3) +
+    facet_wrap(~ nursery + geno, drop = TRUE) +
+    scale_color_manual(name = "problem", drop = FALSE,
+                       values = c("black", "yellow", "red", "orange", "blue", "turquoise"))
+}
+```
+
+# Plot fits
+```{r, fig.width = 10, fig.height = 10}
+# Plot fits
+plotfits(data = fvals)
+```
+
+```{r}
+# Import data from 2020
+ed50_2020 <- read_csv("~/Projects/CBASS_FL_Acer/data/processed/ed50_values.csv") %>%
+  mutate(nursery = case_when(nursery == "mote" ~ "mml", TRUE ~ nursery),
+         ed50_2020 = ed50, 
+         std.error_2020 = std.error) %>%
+  select(nursery, geno, ed50_2020, std.error_2020)
+
+# In 2020, some genotypes were run multiple times from the same nursery, indicated by (A), (B), (C), etc.
+# Group these, and get the average ED50 for 2020 for each genotype from each nursery
+# ed50_2020 <- ed50_2020 %>%
+#   separate(geno, into = c("geno", "replicate"), sep = "\\(") %>%
+#   group_by(geno, nursery) %>%
+#   summarise(ed50_2020 = weighted.mean(ed50_2020, 1/std.error_2020^2), std.error_2020 = mean(std.error_2020))
+
+ed50_2021 <- ed50 %>%
+  mutate(ed50_2021 = estimate,
+         std.error_2021 = std.error,
+         nursery = tolower(nursery)) %>%
+  select(nursery, geno, ed50_2021, std.error_2021)
+
+alldf <- left_join(ed50_2021, ed50_2020, by = c("nursery", "geno"))
+
+ggplot(alldf, aes(x = ed50_2020, y = ed50_2021)) +
+  geom_point(aes(color = nursery, shape = nursery)) +
+  #geom_errorbar(aes(xmin = ed50_2020 - std.error_2020, xmax = ed50_2020 + std.error_2020), lwd = 0.1) +
+  #geom_errorbar(aes(ymin = ed50_2021 - std.error_2021, ymax = ed50_2021 + std.error_2021), lwd = 0.1) +
+  geom_text(aes(label = geno), size = 5) +
+  geom_smooth(aes(color = nursery, shape = nursery), method = "lm", se = FALSE) +
+  labs(x = "ED50 - 2020", y = "ED50 - 2021") +
+  coord_fixed(ratio = 1, xlim = c(34.5, 37.0), ylim = c(34.5, 37.0)) +
+  #ggpubr::stat_cor(method = "pearson", label.y = 36.8, label.x = 34.5, size = 3) +
+  ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.5, size = 3)
+
+mod <- lm(ed50_2020 ~ ed50_2021 + nursery, data = alldf)
+anova(mod)
+
+res <- augment(mod, data = drop_na(alldf)) %>%
+  filter(.cooksd < 4/n())
+
+
+
+
+
+
+# Remove nursery effect for plotting
+nmod <- lm(ed50_2021 ~ nursery, data = alldf)
+alldf.adj <- augment(nmod, data = alldf) %>%
+  mutate(ed50_adj = mean(res$estimate_ed50) + .resid)
+
+mod2 <- lm(estimate ~ ed50 * nursery, data = filter(augment(mod), .cooksd < 4/n()))
+anova(mod2)
+ggplot(filter(augment(mod), .cooksd < 4/n()), 
+       aes(x = estimate, y = ed50, color = nursery, shape = nursery)) +
+  geom_point() +
+  geom_label(aes(label = geno)) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(x = "ED50 - 2021", y = "ED50 - 2020")
+```
+
+```{r}
+# Going back to .pim files and putting 2 AOIs per coral
+# 9/6/21: 
+#   pim file 1 is wrong corals / image saved incorrectly -- cannot get new data
+#   pim file 2 only contains top 3 out of 5 corals from the rack in the image
+#   pim file 3 is wrong corals
+#   
+```
+
