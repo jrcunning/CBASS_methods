@@ -12,9 +12,22 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r libs_fxns}
 options(rlib_downstream_check = FALSE)
 library(drc)
+library(mcr)
 library(broom)
 library(lubridate)
 library(tidyverse)
+
+# Create custom ggplot theme
+theme_custom <- function() {
+  theme_bw(base_size = 10, base_family = "Arial") %+replace%
+    theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(), 
+      panel.background = element_blank(),
+      panel.border = element_rect(color = "black", fill = NA),
+      legend.background = element_rect(fill = NA, colour = NA)
+    )
+}
 
 # Function to pivot IPAM data to long form with column for AOI
 ipam_convert <- function(data) {
@@ -22,12 +35,7 @@ ipam_convert <- function(data) {
   pivot_longer(cols = starts_with("f") | starts_with("y")) %>%
   separate(name, into = c("var", "aoi"), sep = "(?<=[A-Za-z_])(?=[0-9])")
 }
-# Function to pivot IPAM data to long form with column for AOI -- 2 AOIs per coral
-ipam_convert2 <- function(data) {
-  data %>% select_if(~ !any(is.na(.))) %>%
-  pivot_longer(cols = starts_with("f") | starts_with("y")) %>%
-  separate(name, into = c("var", "aoi"), sep = "(?<=[A-Za-z_])(?=[0-9])")
-}
+
 ```
 
 # Import data
@@ -37,11 +45,11 @@ genetmd <- readxl::read_xlsx("data/reproducibility/genet_map.xlsx") %>%
   mutate(date = as_date(date), position = as.numeric(position))
 pammd <- readxl::read_xlsx("data/reproducibility/pam_order.xlsx") %>%
   mutate(file_id = paste0(file_id, ".csv"),
-         date = as_date(date))
+         date = as_date(date), n_corals = as.numeric(n_corals))
 
 # Import PAM data
 # List PAM files from 2021-09-06
-pamfiles1 <- list.files(path = "data/reproducibility/PAM_data/20210906", pattern = "*.csv", full.names = T)
+pamfiles1 <- list.files(path = "data/reproducibility/PAM_data/20210906_old", pattern = "*.csv", full.names = T)
 pamfiles2 <- list.files(path = "data/reproducibility/PAM_data/20210908", pattern = "*.csv", full.names = T)
 pamfiles <- c(pamfiles2, pamfiles1)
 
@@ -63,19 +71,22 @@ pam1 <- pam1 %>%
   nest(-file_id, -date) %>%
   mutate(data2 = map(data, ipam_convert)) %>%
   unnest(data2) %>%
-  mutate(position = ceiling(as.numeric(aoi)/2)) %>%
-  select(file_id, date, time, aoi, position, var, value)
+  group_by(file_id, date) %>%
+  select(file_id, date, time, aoi, var, value)
 
 # Join PAM data with rack order information (which PAM file corresponds to which rack of corals)
-pam <- full_join(pam1, pammd)
+pam <- full_join(pam1, pammd) %>%
+  group_by(file_id, date) %>%
+  mutate(position = case_when(max(aoi) > n_corals ~ ceiling(as.numeric(aoi)/2),
+                              max(aoi) == n_corals ~ as.numeric(aoi)))
 
 # Join PAM data with coral genet and temperature treatment information (which AOI corresponds to which coral)
 pam <- genetmd %>%
-  full_join(pam)
+  full_join(pam, by = c("date", "rack", "position"))
 ```
 
-# Analyze Fv/Fm
-```{r}
+# Fit dose-response curves to estimate ED50s
+```{r fit_drc}
 # Get Fv/Fm data and tidy
 df <- pam %>%
   mutate(max_temp = as.numeric(temp)) %>%
@@ -83,13 +94,12 @@ df <- pam %>%
   mutate(fvfmraw = y_ii_, fvfm = y_ii_) %>%
   select(geno = genet, nursery, max_temp, f, fm, fvfmraw, fvfm)
 
-
 # Define function to fit 3-parameter LL model to data and return NULL if fitting error
 ll3 <- function(data) {
   drm(fvfm ~ max_temp, data = data, 
       fct = LL.3(names = c("hill", "max", "ED50")),
-      upperl = c(1000, 1, 100),
-      lowerl = c(0, 0, 0))}
+      upperl = c(50, 1, 40),
+      lowerl = c(20, 0, 30))}
 tryll3 <- possibly(ll3, otherwise = NULL)
 
 # Fit model to each coral, get parameters, fitted values, and residuals
@@ -115,6 +125,27 @@ vals <- initmods %>%
   full_join(df) %>%
   rename(ed50 = estimate) %>%
   mutate(problem = "none")
+```
+
+```{r drc_diagnostics}
+
+# #### diagnostics
+# # Extract hill parameter values from model fits
+# hill <- initmods %>% 
+#   select(nursery, geno, pars) %>%
+#   unnest(pars) %>%
+#   filter(term == "hill")
+# ggplot(hill) +
+#   geom_histogram(aes(x = estimate))
+# hill %>% arrange(estimate)
+# 
+# maxes <- initmods %>% 
+#   select(nursery, geno, pars) %>%
+#   unnest(pars) %>%
+#   filter(term == "max")
+# ggplot(maxes) +
+#   geom_histogram(aes(x = estimate))
+# maxes %>% arrange(-estimate)
 
 # # Identify problematic data points based on cook's distance and residuals
 # counts <- vals %>%
@@ -163,7 +194,8 @@ vals <- initmods %>%
 #   rename(ed50 = estimate)
 ```
 
-```{r plot, fig.width = 10, fig.height = 10, echo = FALSE}
+# Plot dose response curves for each genotype
+```{r plot, fig.width = 10, fig.height = 10}
 # Define function to plot raw data, fitted values, and ed50 for each genotype
 plotfits <- function(data) {
   ggplot(data = data, aes(x = max_temp)) + 
@@ -185,14 +217,12 @@ plotfits <- function(data) {
     scale_color_manual(name = "problem", drop = FALSE,
                        values = c("black", "yellow", "red", "orange", "blue", "turquoise"))
 }
-```
 
-# Plot fits
-```{r, fig.width = 10, fig.height = 10}
 # Plot fits
 plotfits(data = vals)
 ```
 
+# Compare ED50s measured in 2021 to ED50s measured in 2020
 ```{r}
 # Import data from 2020
 ed50_2020 <- read_csv("~/Projects/CBASS_FL_Acer/data/processed/ed50_values.csv") %>%
@@ -203,19 +233,20 @@ ed50_2020 <- read_csv("~/Projects/CBASS_FL_Acer/data/processed/ed50_values.csv")
 
 # In 2020, some genotypes were run multiple times from the same nursery, indicated by (A), (B), (C), etc.
 # Group these, and get the average ED50 for 2020 for each genotype from each nursery
-# ed50_2020 <- ed50_2020 %>%
-#   separate(geno, into = c("geno", "replicate"), sep = "\\(") %>%
-#   group_by(geno, nursery) %>%
-#   summarise(ed50_2020 = weighted.mean(ed50_2020, 1/std.error_2020^2), std.error_2020 = mean(std.error_2020))
+ed50_2020 <- ed50_2020 %>%
+  separate(geno, into = c("geno", "replicate"), sep = "\\(") %>%
+  group_by(geno, nursery) %>%
+  summarise(ed50_2020 = weighted.mean(ed50_2020, 1/std.error_2020^2), std.error_2020 = mean(std.error_2020))
 
+# Tidy 2021 data and join with 2020
 ed50_2021 <- ed50 %>%
   mutate(ed50_2021 = estimate,
          std.error_2021 = std.error,
          nursery = tolower(nursery)) %>%
   select(nursery, geno, ed50_2021, std.error_2021)
-
 alldf <- left_join(ed50_2021, ed50_2020, by = c("nursery", "geno"))
 
+# Plot raw ED50 values from 2021 vs. 2020
 ggplot(alldf, aes(x = ed50_2020, y = ed50_2021)) +
   geom_point(aes(color = nursery, shape = nursery)) +
   geom_errorbar(aes(xmin = ed50_2020 - std.error_2020, xmax = ed50_2020 + std.error_2020), lwd = 0.1) +
@@ -227,30 +258,171 @@ ggplot(alldf, aes(x = ed50_2020, y = ed50_2021)) +
   ggpubr::stat_cor(method = "pearson", label.y = 36.8, label.x = 34.5, size = 3)
   #ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.5, size = 3)
 
-mod <- lm(ed50_2020 ~ ed50_2021 + nursery, data = alldf)
+# Linear model for raw ED50 values
+mod <- lm(ed50_2021 ~ ed50_2020 + nursery, data = alldf)
+anova(mod)
+```
+
+# Adjust ED50 values for nursery:year effects
+```{r}
+# Pivot to long form to model nursery:year differences and then subtract residuals
+# Removes differences due to nursery and year to focus on genotype differences only
+long <- alldf %>% drop_na() %>%
+  select(nursery, geno, ed50_2021, ed50_2020) %>%
+  pivot_longer(cols = c(ed50_2021, ed50_2020), names_to = "year", values_to = "ed50") 
+mod <- lm(ed50 ~ nursery:year, data = long)
+res <- augment(mod, long) %>%
+  mutate(ed50_adj = mean(long$ed50) + .resid)
+
+# Confirm that all nursery:year groups now have same mean value
+res %>%
+  group_by(nursery, year) %>%
+  summarise(meanvaladj = mean(ed50_adj))
+
+# Pivot to wide form to model 2021 vs. 2020
+res2 <- res %>%
+  select(nursery, geno, year, ed50_adj) %>%
+  pivot_wider(names_from = year, values_from = ed50_adj)
+
+# Model adjusted ED50ʻs from 2021 vs. 2020
+## Linear model
+mod.lm <- lm(ed50_2021 ~ ed50_2020, data = res2)
+anova(mod.lm)
+summary(mod.lm)
+## Passing-Bablok, Deming, and quantile regressions
+paba.reg <- mcreg(res2$ed50_2020, res2$ed50_2021, method.reg = "PaBa")
+dem.reg <- mcreg(res2$ed50_2020, res2$ed50_2021, method.reg = "Deming")
+mod.rq <- rq(ed50_2021 ~ ed50_2020, data = res2)
+
+# Plot with different regression lines
+res2 %>%
+  ggplot(aes(x = ed50_2020, y = ed50_2021)) +
+  geom_point() + #aes(color = abs(ed50_2020-ed50_2021) < 0.5)) +
+  #geom_abline(aes(slope = coef(mod.lm)[2], intercept = coef(mod.lm)[1])) +
+  geom_abline(aes(slope = coef(mod.rq)[2], intercept = coef(mod.rq)[1])) +
+  geom_abline(aes(slope = paba.reg@para[2], intercept = paba.reg@para[1]), color = "blue") +
+  #geom_abline(aes(slope = dem.reg@para[2], intercept = dem.reg@para[1]), color = "red") +
+  geom_abline(aes(slope = 1, intercept = 0), lty = 2) +
+  ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.85, size = 3) +
+  theme_custom() +
+  theme(legend.position = "none")
+
+res2 %>%
+  count(within0.5 = abs(ed50_2020-ed50_2021) < 0.5) %>%
+  mutate(perc = n / nrow(res2))
+
+#
+cor.test(res2$ed50_2020, res2$ed50_2021, method = "spearman")
+
+res2 <- res2 %>%
+  mutate(top_2020 = ed50_2020 > quantile(res2$ed50_2020, 0.5),
+         top_2021 = ed50_2021 > quantile(res2$ed50_2021, 0.5))
+
+res2 %>%
+  count(top_2020, top_2021)
+
+ggplot(res2, aes(x = ed50_2020, y = ed50_2021, color = top_2020, shape = top_2021)) +
+  geom_point()
+
+
+res2 %>%
+  sample_n(2) %>%
+  if(range(ed50_2020) >= 1) {
+    
+  }
+
+
+calc <- function(z) {
+  res3 <- vector()
+  for (i in 1:nrow(res2)) {
+    x <- res2[i, ]
+    for (j in 1:nrow(res2)) {
+      y <- res2[j, ]
+      if (abs(x$ed50_2020 - y$ed50_2020) >= z) {
+        rank20 <- x$ed50_2020 > y$ed50_2020
+        rank21 <- x$ed50_2021 > y$ed50_2021
+        res3 <- c(res3, rank20 == rank21)
+      }
+    }
+  }
+  res4 <- table(res3)
+  return(res4["TRUE"]/sum(res4))
+}
+calc(0)
+calc(0.25)
+calc(0.5)
+calc(1)
+calc(1.2)
+calc(1.3)
+calc(1.4)
+calc(1.5)
+
+
+genets <- res2$geno
+combos <- apply(combn(genets,2),2,paste,collapse='_')
+pairs <- tibble(pair = combos) %>%
+  separate(pair, into = c("genet1", "genet2"), sep = "_")
+
+long
+
+ed50_2020 %>%
+  select(geno, ed50_2020) %>%
+  dist()
+
+dist(ed50_2020$ed50_2020)
+
+left_join(pairs, ed50_2020)
+
+combos <- combn(genets, 2, simplify = FALSE)
+tibble(grp = unlist(combos))
+
+
+
+
+
+
+x = c(1,2,3,4,5)    
+apply(combn(x,2),2,paste,collapse='_')
+
+
+
+
+# Get all pairwise differences between genos in 2020 and 2021
+genos <- alldf$geno
+diffs2020 <- outer(alldf$ed50_2020, alldf$ed50_2020, `-`)
+dimnames(diffs2020) <- list(geno1 = genos, geno2 = genos)
+diffs2021 <- outer(alldf$ed50_2021, alldf$ed50_2021, `-`)
+dimnames(diffs2021) <- list(geno1 = genos, geno2 = genos)
+
+diffs2021 <- reshape2::melt(diffs2021, value.name = "diff")
+diffs2020 <- reshape2::melt(diffs2020, value.name = "diff")
+alldiffs <- as_tibble(full_join(diffs2020, diffs2021, by = c("geno1", "geno2"), suffix = c(".20", ".21")))
+
+# Plot pairwise ED50 differences in 2021 as a function of how much HIGHER one genet's 2020 ED50 was
+alldiffs %>% 
+  filter(diff.20 > 0) %>%       # Get all 2020 comparisons where genet 1 HIGHER than genet 2
+  ggplot(aes(x = diff.20, y = diff.21)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE)
+
+diffs2 <- alldiffs %>% 
+  filter(diff.20 > 0) %>%
+  mutate(higher21 = diff.21 > 0)
+mod <- glm(higher21 ~ diff.20, data = diffs2, family = "binomial")
 anova(mod)
 
-res <- augment(mod, data = drop_na(alldf)) %>%
-  filter(.cooksd < 4/n())
+# Get probability that rank order is same given difference in 2020 ED50s
+pred <- tibble(diff.20 = seq(0, 2, 0.01))
+emm <- emmeans::emmeans(mod, specs = "diff.20", at = list(diff.20 = seq(0,2,0.01)), type = "response")
+data.frame(emm) %>%
+  ggplot(aes(x = diff.20, y = prob)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL), alpha = 0.2) +
+  labs(x = "Difference in ED50 measured in 2020",
+       y = "Probability rank order holds in 2021")
 
+# What about groups of n=5 genotypes?
 
-
-
-
-
-# Remove nursery effect for plotting
-nmod <- lm(ed50_2021 ~ nursery, data = alldf)
-alldf.adj <- augment(nmod, data = alldf) %>%
-  mutate(ed50_adj = mean(res$estimate_ed50) + .resid)
-
-mod2 <- lm(estimate ~ ed50 * nursery, data = filter(augment(mod), .cooksd < 4/n()))
-anova(mod2)
-ggplot(filter(augment(mod), .cooksd < 4/n()), 
-       aes(x = estimate, y = ed50, color = nursery, shape = nursery)) +
-  geom_point() +
-  geom_label(aes(label = geno)) +
-  geom_smooth(method = "lm", se = FALSE) +
-  labs(x = "ED50 - 2021", y = "ED50 - 2020")
 ```
 
 ```{r}
