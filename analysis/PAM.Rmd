@@ -36,7 +36,6 @@ ipam_convert <- function(data) {
   pivot_longer(cols = starts_with("f") | starts_with("y")) %>%
   separate(name, into = c("var", "aoi"), sep = "(?<=[A-Za-z_])(?=[0-9])")
 }
-
 ```
 
 # Import data
@@ -50,8 +49,8 @@ pammd <- readxl::read_xlsx("data/reproducibility/pam_order.xlsx") %>%
 
 # Import PAM data
 # List PAM files from 2021-09-06
-pamfiles1 <- list.files(path = "data/reproducibility/PAM_data/20210906", pattern = "*.csv", full.names = T)
-pamfiles2 <- list.files(path = "data/reproducibility/PAM_data/20210908", pattern = "*.csv", full.names = T)
+pamfiles1 <- list.files(path = "data/reproducibility/PAM_data/20210906_1", pattern = "*.csv", full.names = T)
+pamfiles2 <- list.files(path = "data/reproducibility/PAM_data/20210908_1", pattern = "*.csv", full.names = T)
 pamfiles <- c(pamfiles2, pamfiles1)
 
 # Import data from each file
@@ -217,7 +216,8 @@ plotfits <- function(data) {
 }
 
 # Plot fits
-plotfits(data = fvals)
+plotfits(vals)
+#plotfits(data = fvals)
 ```
 
 # Compare ED50s measured in 2021 to ED50s measured in 2020
@@ -238,7 +238,7 @@ ed50_2020 <- ed50_2020 %>%
 
 # Tidy 2021 data and join with 2020
 ### Choose filtered or unfiltered 2021 data
-ed50_2021 <- fed50    # ed50 (unfiltered) or fed50 (filtered)
+ed50_2021 <- ed50    # ed50 (unfiltered) or fed50 (filtered)
 ed50_2021 <- ed50_2021 %>%
   mutate(ed50_2021 = estimate,
          std.error_2021 = std.error,
@@ -247,7 +247,7 @@ ed50_2021 <- ed50_2021 %>%
 alldf <- left_join(ed50_2021, ed50_2020, by = c("nursery", "geno"))
 
 # Plot raw ED50 values from 2021 vs. 2020
-ggplot(alldf, aes(x = ed50_2020, y = ed50_2021)) +
+plot1 <- ggplot(alldf, aes(x = ed50_2020, y = ed50_2021)) +
   geom_point(aes(color = nursery, shape = nursery)) +
   geom_errorbar(aes(xmin = ed50_2020 - std.error_2020, xmax = ed50_2020 + std.error_2020), lwd = 0.1) +
   geom_errorbar(aes(ymin = ed50_2021 - std.error_2021, ymax = ed50_2021 + std.error_2021), lwd = 0.1) +
@@ -257,29 +257,37 @@ ggplot(alldf, aes(x = ed50_2020, y = ed50_2021)) +
   coord_fixed(ratio = 1, xlim = c(34.5, 37.0), ylim = c(34.5, 37.0)) +
   ggpubr::stat_cor(method = "pearson", label.y = 36.8, label.x = 34.5, size = 3)
   #ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.5, size = 3)
+plot1
 
-# Linear model for raw ED50 values
+# Linear model for raw/unadjusted ED50 values
 mod <- lm(ed50_2021 ~ ed50_2020 + nursery, data = alldf)
 anova(mod)
 ```
 
+# Filter out ED50 measurements with high error (lower confidence in value)
 ```{r}
 # Filter just ED50s with lower standard errors
 quantile(alldf$std.error_2020, 0.85, na.rm = T)
 quantile(alldf$std.error_2021, 0.85, na.rm = T)
+ggplot(alldf, aes(x = std.error_2020, y = std.error_2021)) + geom_point()
+
+alldf <- alldf %>% mutate(sum.std.error = (std.error_2021 + std.error_2020))
+# test <- alldf %>% drop_na() %>% mutate(mahal = joeyr::tidy_mahalanobis(std.error_2021^3, std.error_2020^3)) %>%
+#   arrange(-mahal)
+# ggplot(test, aes(x = sum.std.error, y = mahal)) +geom_point()
+# ggplot(test, aes(x = std.error_2020, y = std.error_2021)) + geom_point(aes(color = sum.std.error >= 0.63))
+
 highconf <- alldf %>%
-  filter(std.error_2021 < 0.2, std.error_2020 < 0.2)      # 0.3 filters to 54/67 = 80% of genets    #0.25 filters to 38/67 = 56%
+  #filter(std.error_2021 < 0.5, std.error_2020 < 0.3)      # 0.3 filters to 54/67 = 80% of genets    #0.25 filters to 38/67 = 56%
+  filter(sum.std.error < 0.63)
+
+#
+# highconf <- test %>% 
+#   arrange(mahal) %>%
+#   slice(1:49)
+
 # Plot raw ED50 values from 2021 vs. 2020
-ggplot(highconf, aes(x = ed50_2020, y = ed50_2021)) +
-  geom_point(aes(color = nursery, shape = nursery)) +
-  geom_errorbar(aes(xmin = ed50_2020 - std.error_2020, xmax = ed50_2020 + std.error_2020), lwd = 0.1) +
-  geom_errorbar(aes(ymin = ed50_2021 - std.error_2021, ymax = ed50_2021 + std.error_2021), lwd = 0.1) +
-  geom_text(aes(label = geno), size = 5) +
-  geom_smooth(aes(color = nursery, shape = nursery), method = "lm", se = FALSE) +
-  labs(x = "ED50 - 2020", y = "ED50 - 2021") +
-  coord_fixed(ratio = 1, xlim = c(34.5, 37.0), ylim = c(34.5, 37.0)) +
-  ggpubr::stat_cor(method = "pearson", label.y = 36.8, label.x = 34.5, size = 3)
-  #ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.5, size = 3)
+plot1 %+% highconf
 
 # Linear model for raw ED50 values
 mod <- lm(ed50_2021 ~ ed50_2020 + nursery, data = highconf)
@@ -315,17 +323,16 @@ summary(mod.lm)
 ## Passing-Bablok, Deming, and quantile regressions
 paba.reg <- mcreg(res2$ed50_2020, res2$ed50_2021, method.reg = "PaBa")
 dem.reg <- mcreg(res2$ed50_2020, res2$ed50_2021, method.reg = "Deming")
-
 mod.rq <- rq(ed50_2021 ~ ed50_2020, data = res2)
 
 # Plot with different regression lines
 res2 %>%
   ggplot(aes(x = ed50_2020, y = ed50_2021)) +
   geom_point() + #aes(color = abs(ed50_2020-ed50_2021) < 0.5)) +
-  #geom_label(aes(label = geno)) +
+  geom_label(aes(label = geno)) +
   #geom_abline(aes(slope = coef(mod.lm)[2], intercept = coef(mod.lm)[1])) +
   #geom_abline(aes(slope = coef(mod.rq)[2], intercept = coef(mod.rq)[1])) +
-  #geom_abline(aes(slope = paba.reg@para[2], intercept = paba.reg@para[1]), color = "blue") +
+  geom_abline(aes(slope = paba.reg@para[2], intercept = paba.reg@para[1]), color = "blue") +
   #geom_abline(aes(slope = dem.reg@para[2], intercept = dem.reg@para[1]), color = "red") +
   geom_abline(aes(slope = 1, intercept = 0), lty = 2) +
   ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.85, size = 3) +
@@ -337,11 +344,11 @@ res2 %>%
 
 
 ```{r}
-# Get all pairwise differences between genos in 2020 and 2021
-genos <- alldf$geno
-diffs2020 <- outer(alldf$ed50_2020, alldf$ed50_2020, `-`)
+# Get all pairwise differences between high confidence genos in 2020 and 2021
+genos <- highconf$geno
+diffs2020 <- outer(highconf$ed50_2020, highconf$ed50_2020, `-`)
 dimnames(diffs2020) <- list(geno1 = genos, geno2 = genos)
-diffs2021 <- outer(alldf$ed50_2021, alldf$ed50_2021, `-`)
+diffs2021 <- outer(highconf$ed50_2021, highconf$ed50_2021, `-`)
 dimnames(diffs2021) <- list(geno1 = genos, geno2 = genos)
 
 diffs2021 <- reshape2::melt(diffs2021, value.name = "diff")
@@ -358,6 +365,7 @@ alldiffs %>%
 diffs2 <- alldiffs %>% 
   filter(diff.20 > 0) %>%
   mutate(higher21 = diff.21 > 0)
+ggplot(diffs2, aes(x = diff.20, y = higher21)) + geom_jitter()
 mod <- glm(higher21 ~ diff.20, data = diffs2, family = "binomial")
 anova(mod)
 
@@ -370,76 +378,72 @@ data.frame(emm) %>%
   labs(x = "Difference in ED50 measured in 2020",
        y = "Probability rank order holds in 2021")
 
-# What about groups of n=5 genotypes?
-rand <- function(n) {
-  df <- drop_na(alldf) %>% slice_sample(n = n*2) %>%
-    mutate(group = factor(c(rep(1, 5), rep(2, 5))))
-  mod20 <- aov(ed50_2020 ~ group, data = df)
-  tuk20 <- TukeyHSD(mod20)
-  mod21 <- aov(ed50_2021 ~ group, data = df)
-  tuk21 <- TukeyHSD(mod21)
-  c(tuk20$group[c(1,4)], tuk21$group[c(1,4)])
-}
-res <- replicate(10000, rand(5))
-
-res <- as_tibble(t(res)) %>%
-  rename(diff.20 = V1, p.20 = V2, diff.21 = V3, p.21 = V4)
-res %>%
-  filter(p.20 < 0.05) %>%
-  ggplot(aes(x = diff.20, y = diff.21)) +
-  geom_point()
-res %>%
-  filter(p.20 < 0.05) %>%
-  ggplot(aes(x = abs(diff.20), y = abs(diff.21))) +
-  geom_point()
-
-# Bland-Altman plot
-alldf <- alldf %>%
-  mutate(avg = (ed50_2021 + ed50_2020)/2,
-         diff = ed50_2021 - ed50_2020)
-ggplot(alldf, aes(x = avg, y = diff)) +
-  geom_point()
-
-mean_diff <- mean(alldf$diff, na.rm = T)
-lower <- mean_diff - 1.96*sd(alldf$diff, na.rm = T)
-upper <- mean_diff + 1.96*sd(alldf$diff, na.rm = T)
-upper
-
-# If select top X from 2020 data, what is chance they have significantly higher than average ED50 in 2021?
-X <- 10
-topX <- alldf %>%
-    arrange(-ed50_2020) %>%
-    slice(1:X)
-
-hi <- alldf %>%
-  mutate(group = geno %in% topX$geno)
-mod <- lm(ed50_2021 ~ group, data = hi)
-anova(mod)
-
-emm <- emmeans::emmeans(mod, specs = "group")
-emmeans::contrast(emm, "eff")
+# # What about groups of n=5 genotypes?
+# rand <- function(n) {
+#   df <- drop_na(alldf) %>% slice_sample(n = n*2) %>%
+#     mutate(group = factor(c(rep(1, 5), rep(2, 5))))
+#   mod20 <- aov(ed50_2020 ~ group, data = df)
+#   tuk20 <- TukeyHSD(mod20)
+#   mod21 <- aov(ed50_2021 ~ group, data = df)
+#   tuk21 <- TukeyHSD(mod21)
+#   c(tuk20$group[c(1,4)], tuk21$group[c(1,4)])
+# }
+# res <- replicate(10000, rand(5))
+# 
+# res <- as_tibble(t(res)) %>%
+#   rename(diff.20 = V1, p.20 = V2, diff.21 = V3, p.21 = V4)
+# res %>%
+#   filter(p.20 < 0.05) %>%
+#   ggplot(aes(x = diff.20, y = diff.21)) +
+#   geom_point()
+# res %>%
+#   filter(p.20 < 0.05) %>%
+#   ggplot(aes(x = abs(diff.20), y = abs(diff.21))) +
+#   geom_point()
+# 
+# # Bland-Altman plot
+# alldf <- alldf %>%
+#   mutate(avg = (ed50_2021 + ed50_2020)/2,
+#          diff = ed50_2021 - ed50_2020)
+# ggplot(alldf, aes(x = avg, y = diff)) +
+#   geom_point()
+# 
+# mean_diff <- mean(alldf$diff, na.rm = T)
+# lower <- mean_diff - 1.96*sd(alldf$diff, na.rm = T)
+# upper <- mean_diff + 1.96*sd(alldf$diff, na.rm = T)
+# upper
+# 
+# # If select top X from 2020 data, what is chance they have significantly higher than average ED50 in 2021?
+# X <- 10
+# topX <- alldf %>%
+#     arrange(-ed50_2020) %>%
+#     slice(1:X)
+# 
+# hi <- alldf %>%
+#   mutate(group = geno %in% topX$geno)
+# mod <- lm(ed50_2021 ~ group, data = hi)
+# anova(mod)
+# 
+# emm <- emmeans::emmeans(mod, specs = "group")
+# emmeans::contrast(emm, "eff")
 ```
 
+# Estimate repeatability
 ```{r}
 install.packages("rptR")
 library(rptR)
 long
 out <- rpt(ed50 ~ nursery * year  + (1|geno), data = long, grname = "geno")
 out
-out
+plot(out)
+summary(out)
 
-lowvar <- alldf %>% filter(std.error_2021 < 0.5, std.error_2020 < 0.25)
-out <- rpt(ed50 ~ nursery * year + (1|geno), data = filter(long, geno %in% lowvar$geno), 
-                                                            grname = c("geno", "Fixed"))
-out
-ggplot(alldf, aes(x = ed50_2020, y = ed50_2021, color = std.error_2021 < 0.5 & std.error_2020 < 0.25)) +
-  geom_point()
 
 
 #RC
 # Mean within-subject sample variance
-alldf <- alldf %>% rowwise() %>% mutate(var = var(c(ed50_2021, ed50_2020)))
-var_w <- mean(alldf$var, na.rm = TRUE)
+res3 <- res2 %>% rowwise() %>% mutate(var = var(c(ed50_2021, ed50_2020)))
+var_w <- mean(res3$var, na.rm = TRUE)
 # Within-subject sample standard deviation
 s_w <- sqrt(var_w)
 # Coefficient of repeatability
