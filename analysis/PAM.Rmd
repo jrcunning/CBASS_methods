@@ -267,26 +267,19 @@ anova(mod)
 # Filter out ED50 measurements with high error (lower confidence in value)
 ```{r}
 # Filter just ED50s with lower standard errors
-quantile(alldf$std.error_2020, 0.85, na.rm = T)
-quantile(alldf$std.error_2021, 0.85, na.rm = T)
-ggplot(alldf, aes(x = std.error_2020, y = std.error_2021)) + geom_point()
+#ggplot(alldf, aes(x = std.error_2020, y = std.error_2021)) + geom_point()
 
+# Calculate sum of the ED50 standard errors for 2020 and 2021
 alldf <- alldf %>% mutate(sum.std.error = (std.error_2021 + std.error_2020))
-# test <- alldf %>% drop_na() %>% mutate(mahal = joeyr::tidy_mahalanobis(std.error_2021^3, std.error_2020^3)) %>%
-#   arrange(-mahal)
-# ggplot(test, aes(x = sum.std.error, y = mahal)) +geom_point()
-# ggplot(test, aes(x = std.error_2020, y = std.error_2021)) + geom_point(aes(color = sum.std.error >= 0.63))
+#hist(alldf$sum.std.error, breaks = 50)
+boxplot(alldf$sum.std.error)
 
+# Take highest-confidence 50 genotypes based on lowest combined standard error on ED50 measurements
 highconf <- alldf %>%
-  #filter(std.error_2021 < 0.5, std.error_2020 < 0.3)      # 0.3 filters to 54/67 = 80% of genets    #0.25 filters to 38/67 = 56%
-  filter(sum.std.error < 0.63)
+  arrange(sum.std.error) %>%
+  slice(1:50)
 
-#
-# highconf <- test %>% 
-#   arrange(mahal) %>%
-#   slice(1:49)
-
-# Plot raw ED50 values from 2021 vs. 2020
+# Plot raw ED50 values from 2021 vs. 2020 for high-confidence genotypes
 plot1 %+% highconf
 
 # Linear model for raw ED50 values
@@ -306,9 +299,9 @@ res <- augment(mod, long) %>%
   mutate(ed50_adj = mean(long$ed50) + .resid)
 
 # Confirm that all nursery:year groups now have same mean value
-res %>%
-  group_by(nursery, year) %>%
-  summarise(meanvaladj = mean(ed50_adj))
+# res %>%
+#   group_by(nursery, year) %>%
+#   summarise(meanvaladj = mean(ed50_adj))
 
 # Pivot to wide form to model 2021 vs. 2020
 res2 <- res %>%
@@ -329,26 +322,26 @@ mod.rq <- rq(ed50_2021 ~ ed50_2020, data = res2)
 res2 %>%
   ggplot(aes(x = ed50_2020, y = ed50_2021)) +
   geom_point() + #aes(color = abs(ed50_2020-ed50_2021) < 0.5)) +
-  geom_label(aes(label = geno)) +
+  #geom_label(aes(label = geno)) +
   #geom_abline(aes(slope = coef(mod.lm)[2], intercept = coef(mod.lm)[1])) +
-  #geom_abline(aes(slope = coef(mod.rq)[2], intercept = coef(mod.rq)[1])) +
+  geom_abline(aes(slope = coef(mod.rq)[2], intercept = coef(mod.rq)[1])) +
   geom_abline(aes(slope = paba.reg@para[2], intercept = paba.reg@para[1]), color = "blue") +
   #geom_abline(aes(slope = dem.reg@para[2], intercept = dem.reg@para[1]), color = "red") +
   geom_abline(aes(slope = 1, intercept = 0), lty = 2) +
   ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.85, size = 3) +
   theme_custom() +
-  theme(legend.position = "none") +
+  theme(legend.position = "none")
   #facet_wrap(~nursery) +
-  geom_smooth(method = "lm", se = FALSE)
+  #geom_smooth(method = "lm", se = FALSE)
 ```
 
 
 ```{r}
-# Get all pairwise differences between high confidence genos in 2020 and 2021
-genos <- highconf$geno
-diffs2020 <- outer(highconf$ed50_2020, highconf$ed50_2020, `-`)
+# Get all pairwise differences in adjusted ED50 between high confidence genos in 2020 and 2021
+genos <- res2$geno
+diffs2020 <- outer(res2$ed50_2020, res2$ed50_2020, `-`)
 dimnames(diffs2020) <- list(geno1 = genos, geno2 = genos)
-diffs2021 <- outer(highconf$ed50_2021, highconf$ed50_2021, `-`)
+diffs2021 <- outer(res2$ed50_2021, res2$ed50_2021, `-`)
 dimnames(diffs2021) <- list(geno1 = genos, geno2 = genos)
 
 diffs2021 <- reshape2::melt(diffs2021, value.name = "diff")
@@ -361,6 +354,8 @@ alldiffs %>%
   ggplot(aes(x = diff.20, y = diff.21)) +
   geom_point(alpha = 0.5) +
   geom_smooth(method = "lm", se = FALSE)
+
+alldiffs %>% arrange(-diff.20)
 
 diffs2 <- alldiffs %>% 
   filter(diff.20 > 0) %>%
@@ -377,78 +372,29 @@ data.frame(emm) %>%
   geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL), alpha = 0.2) +
   labs(x = "Difference in ED50 measured in 2020",
        y = "Probability rank order holds in 2021")
-
-# # What about groups of n=5 genotypes?
-# rand <- function(n) {
-#   df <- drop_na(alldf) %>% slice_sample(n = n*2) %>%
-#     mutate(group = factor(c(rep(1, 5), rep(2, 5))))
-#   mod20 <- aov(ed50_2020 ~ group, data = df)
-#   tuk20 <- TukeyHSD(mod20)
-#   mod21 <- aov(ed50_2021 ~ group, data = df)
-#   tuk21 <- TukeyHSD(mod21)
-#   c(tuk20$group[c(1,4)], tuk21$group[c(1,4)])
-# }
-# res <- replicate(10000, rand(5))
-# 
-# res <- as_tibble(t(res)) %>%
-#   rename(diff.20 = V1, p.20 = V2, diff.21 = V3, p.21 = V4)
-# res %>%
-#   filter(p.20 < 0.05) %>%
-#   ggplot(aes(x = diff.20, y = diff.21)) +
-#   geom_point()
-# res %>%
-#   filter(p.20 < 0.05) %>%
-#   ggplot(aes(x = abs(diff.20), y = abs(diff.21))) +
-#   geom_point()
-# 
-# # Bland-Altman plot
-# alldf <- alldf %>%
-#   mutate(avg = (ed50_2021 + ed50_2020)/2,
-#          diff = ed50_2021 - ed50_2020)
-# ggplot(alldf, aes(x = avg, y = diff)) +
-#   geom_point()
-# 
-# mean_diff <- mean(alldf$diff, na.rm = T)
-# lower <- mean_diff - 1.96*sd(alldf$diff, na.rm = T)
-# upper <- mean_diff + 1.96*sd(alldf$diff, na.rm = T)
-# upper
-# 
-# # If select top X from 2020 data, what is chance they have significantly higher than average ED50 in 2021?
-# X <- 10
-# topX <- alldf %>%
-#     arrange(-ed50_2020) %>%
-#     slice(1:X)
-# 
-# hi <- alldf %>%
-#   mutate(group = geno %in% topX$geno)
-# mod <- lm(ed50_2021 ~ group, data = hi)
-# anova(mod)
-# 
-# emm <- emmeans::emmeans(mod, specs = "group")
-# emmeans::contrast(emm, "eff")
 ```
 
 # Estimate repeatability
 ```{r}
-install.packages("rptR")
+# Repeatability
 library(rptR)
-long
 out <- rpt(ed50 ~ nursery * year  + (1|geno), data = long, grname = "geno")
-out
 plot(out)
 summary(out)
 
 
 
-#RC
+#Repeatability coefficient
 # Mean within-subject sample variance
 res3 <- res2 %>% rowwise() %>% mutate(var = var(c(ed50_2021, ed50_2020)))
 var_w <- mean(res3$var, na.rm = TRUE)
 # Within-subject sample standard deviation
 s_w <- sqrt(var_w)
 # Coefficient of repeatability
-rc <- 1.96 * sqrt(2) * s_w
-rc   # 95% of the time, repeat measurements will differ by less than rc
+rc95 <- 1.96 * sqrt(2) * s_w
+rc95   # 95% of the time, repeat measurements will differ by less than rc     0.84
+rc90 <- 1.645 * sqrt(2) * s_w
+rc90
 ```
 
 ```{r}
