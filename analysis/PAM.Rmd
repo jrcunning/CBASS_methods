@@ -6,12 +6,13 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
+options(rlib_downstream_check = FALSE)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r libs_fxns}
-options(rlib_downstream_check = FALSE)
 library(drc)
+library(quantreg)
 library(mcr)
 library(broom)
 library(lubridate)
@@ -49,7 +50,7 @@ pammd <- readxl::read_xlsx("data/reproducibility/pam_order.xlsx") %>%
 
 # Import PAM data
 # List PAM files from 2021-09-06
-pamfiles1 <- list.files(path = "data/reproducibility/PAM_data/20210906_old", pattern = "*.csv", full.names = T)
+pamfiles1 <- list.files(path = "data/reproducibility/PAM_data/20210906", pattern = "*.csv", full.names = T)
 pamfiles2 <- list.files(path = "data/reproducibility/PAM_data/20210908", pattern = "*.csv", full.names = T)
 pamfiles <- c(pamfiles2, pamfiles1)
 
@@ -98,8 +99,8 @@ df <- pam %>%
 ll3 <- function(data) {
   drm(fvfm ~ max_temp, data = data, 
       fct = LL.3(names = c("hill", "max", "ED50")),
-      upperl = c(50, 1, 40),
-      lowerl = c(20, 0, 30))}
+      upperl = c(50, 0.7, 40),
+      lowerl = c(20, 0.3, 30))}
 tryll3 <- possibly(ll3, otherwise = NULL)
 
 # Fit model to each coral, get parameters, fitted values, and residuals
@@ -130,8 +131,8 @@ vals <- initmods %>%
 ```{r drc_diagnostics}
 
 # #### diagnostics
-# # Extract hill parameter values from model fits
-# hill <- initmods %>% 
+# Extract hill parameter values from model fits
+# hill <- initmods %>%
 #   select(nursery, geno, pars) %>%
 #   unnest(pars) %>%
 #   filter(term == "hill")
@@ -139,7 +140,7 @@ vals <- initmods %>%
 #   geom_histogram(aes(x = estimate))
 # hill %>% arrange(estimate)
 # 
-# maxes <- initmods %>% 
+# maxes <- initmods %>%
 #   select(nursery, geno, pars) %>%
 #   unnest(pars) %>%
 #   filter(term == "max")
@@ -148,50 +149,47 @@ vals <- initmods %>%
 # maxes %>% arrange(-estimate)
 
 # # Identify problematic data points based on cook's distance and residuals
-# counts <- vals %>%
-#   group_by(nursery, geno) %>%
-#   summarise(n = sum(!is.na(fvfm)))
-# dff <- vals %>%
-#   left_join(counts) %>%
-#   group_by(nursery, geno) %>%
-#   mutate(resid.thresh = 2*sd(.resid, na.rm = T)) %>%  # Calculate residual threshold as 2 standard deviations
-#   mutate(cooksd.thresh = 4/n) %>%   # Calculate cook's distance threshold as 4/n
-#   mutate(max_to_remove = floor(n * 0.2)) %>%
-#   ungroup() %>%
-#   mutate(problem = case_when(.cooksd > cooksd.thresh & .resid > 0 ~ "high cook's distance",
-#                              .resid > resid.thresh ~ "high residual",
-#                              TRUE ~ "none")) %>%
-#   group_by(nursery, geno, outlier = problem %in% c("high cook's distance", "high residual")) %>%
-#   mutate(n.outliers = n(),
-#          rank.out = order(.cooksd, decreasing = TRUE)) %>%
-#   ungroup() %>%
-#   mutate(fvfm = case_when(outlier & rank.out <= max_to_remove ~ NA_real_,
-#                           TRUE ~ fvfm))
-# 
-# 
-# # Refit models without problematic points
-# fmods <- dff %>%
-#   select(nursery, geno, max_temp, f, fm, fvfmraw, problem, fvfm) %>%
-#   nest(data = c(max_temp, f, fm, fvfmraw, fvfm, problem)) %>%
-#   # Fit the model to each coral
-#   mutate(ll3 = map(data, tryll3)) %>%
-#   # Get model parameters and fitted values/residuals
-#   mutate(pars = map(ll3, tidy),
-#          pred = map2(ll3, data, ~augment(.x, drop_na(.y, fvfm))))
-# 
-# # Extract ed50 parameter values from model fits
-# fed50 <- fmods %>%
-#   select(nursery, geno, pars) %>%
-#   unnest(pars) %>%
-#   filter(term == "ED50")
-# 
-# # Collect raw data, fitted values, and ed50 estimates
-# fvals <- fmods %>%
-#   select(nursery, geno, pred) %>%
-#   unnest(pred) %>%
-#   full_join(fed50) %>%
-#   full_join(select(dff, nursery, geno, max_temp, f, fm, fvfmraw, problem, fvfm)) %>%
-#   rename(ed50 = estimate)
+counts <- vals %>%
+  group_by(nursery, geno) %>%
+  summarise(n = sum(!is.na(fvfm)))
+dff <- vals %>%
+  left_join(counts) %>%
+  group_by(nursery, geno) %>%
+  mutate(cooksd.thresh = 4/n) %>%   # Calculate cook's distance threshold as 4/n
+  mutate(max_to_remove = floor(n * 0.2)) %>%
+  ungroup() %>%
+  mutate(problem = case_when(.cooksd > cooksd.thresh & !max_temp %in% c(30, 38) ~ "high cook's distance", # don't allow 30 and 38 to be removed based on cooksd
+                             TRUE ~ "none")) %>%
+  group_by(nursery, geno, outlier = problem %in% c("high cook's distance", "high residual")) %>%
+  mutate(n.outliers = n(),
+         rank.out = order(.cooksd, decreasing = TRUE)) %>%
+  ungroup() %>%
+  mutate(fvfm = case_when(outlier & rank.out <= max_to_remove & !max_temp %in% c(30, 38) ~ NA_real_,
+                          TRUE ~ fvfm))
+
+# Refit models without problematic points
+fmods <- dff %>%
+  select(nursery, geno, max_temp, f, fm, fvfmraw, problem, fvfm) %>%
+  nest(data = c(max_temp, f, fm, fvfmraw, fvfm, problem)) %>%
+  # Fit the model to each coral
+  mutate(ll3 = map(data, tryll3)) %>%
+  # Get model parameters and fitted values/residuals
+  mutate(pars = map(ll3, tidy),
+         pred = map2(ll3, data, ~augment(.x, drop_na(.y, fvfm))))
+
+# Extract ed50 parameter values from model fits
+fed50 <- fmods %>%
+  select(nursery, geno, pars) %>%
+  unnest(pars) %>%
+  filter(term == "ED50")
+
+# Collect raw data, fitted values, and ed50 estimates
+fvals <- fmods %>%
+  select(nursery, geno, pred) %>%
+  unnest(pred) %>%
+  full_join(fed50) %>%
+  full_join(select(dff, nursery, geno, max_temp, f, fm, fvfmraw, problem, fvfm)) %>%
+  rename(ed50 = estimate)
 ```
 
 # Plot dose response curves for each genotype
@@ -219,7 +217,7 @@ plotfits <- function(data) {
 }
 
 # Plot fits
-plotfits(data = vals)
+plotfits(data = fvals)
 ```
 
 # Compare ED50s measured in 2021 to ED50s measured in 2020
@@ -239,7 +237,9 @@ ed50_2020 <- ed50_2020 %>%
   summarise(ed50_2020 = weighted.mean(ed50_2020, 1/std.error_2020^2), std.error_2020 = mean(std.error_2020))
 
 # Tidy 2021 data and join with 2020
-ed50_2021 <- ed50 %>%
+### Choose filtered or unfiltered 2021 data
+ed50_2021 <- fed50    # ed50 (unfiltered) or fed50 (filtered)
+ed50_2021 <- ed50_2021 %>%
   mutate(ed50_2021 = estimate,
          std.error_2021 = std.error,
          nursery = tolower(nursery)) %>%
@@ -263,11 +263,34 @@ mod <- lm(ed50_2021 ~ ed50_2020 + nursery, data = alldf)
 anova(mod)
 ```
 
-# Adjust ED50 values for nursery:year effects
+```{r}
+# Filter just ED50s with lower standard errors
+quantile(alldf$std.error_2020, 0.85, na.rm = T)
+quantile(alldf$std.error_2021, 0.85, na.rm = T)
+highconf <- alldf %>%
+  filter(std.error_2021 < 0.2, std.error_2020 < 0.2)      # 0.3 filters to 54/67 = 80% of genets    #0.25 filters to 38/67 = 56%
+# Plot raw ED50 values from 2021 vs. 2020
+ggplot(highconf, aes(x = ed50_2020, y = ed50_2021)) +
+  geom_point(aes(color = nursery, shape = nursery)) +
+  geom_errorbar(aes(xmin = ed50_2020 - std.error_2020, xmax = ed50_2020 + std.error_2020), lwd = 0.1) +
+  geom_errorbar(aes(ymin = ed50_2021 - std.error_2021, ymax = ed50_2021 + std.error_2021), lwd = 0.1) +
+  geom_text(aes(label = geno), size = 5) +
+  geom_smooth(aes(color = nursery, shape = nursery), method = "lm", se = FALSE) +
+  labs(x = "ED50 - 2020", y = "ED50 - 2021") +
+  coord_fixed(ratio = 1, xlim = c(34.5, 37.0), ylim = c(34.5, 37.0)) +
+  ggpubr::stat_cor(method = "pearson", label.y = 36.8, label.x = 34.5, size = 3)
+  #ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.5, size = 3)
+
+# Linear model for raw ED50 values
+mod <- lm(ed50_2021 ~ ed50_2020 + nursery, data = highconf)
+anova(mod)
+```
+
+# Get adjusted ED50 values, removing nursery and year effects
 ```{r}
 # Pivot to long form to model nursery:year differences and then subtract residuals
 # Removes differences due to nursery and year to focus on genotype differences only
-long <- alldf %>% drop_na() %>%
+long <- highconf %>% drop_na() %>%
   select(nursery, geno, ed50_2021, ed50_2020) %>%
   pivot_longer(cols = c(ed50_2021, ed50_2020), names_to = "year", values_to = "ed50") 
 mod <- lm(ed50 ~ nursery:year, data = long)
@@ -292,101 +315,28 @@ summary(mod.lm)
 ## Passing-Bablok, Deming, and quantile regressions
 paba.reg <- mcreg(res2$ed50_2020, res2$ed50_2021, method.reg = "PaBa")
 dem.reg <- mcreg(res2$ed50_2020, res2$ed50_2021, method.reg = "Deming")
+
 mod.rq <- rq(ed50_2021 ~ ed50_2020, data = res2)
 
 # Plot with different regression lines
 res2 %>%
   ggplot(aes(x = ed50_2020, y = ed50_2021)) +
   geom_point() + #aes(color = abs(ed50_2020-ed50_2021) < 0.5)) +
+  #geom_label(aes(label = geno)) +
   #geom_abline(aes(slope = coef(mod.lm)[2], intercept = coef(mod.lm)[1])) +
-  geom_abline(aes(slope = coef(mod.rq)[2], intercept = coef(mod.rq)[1])) +
-  geom_abline(aes(slope = paba.reg@para[2], intercept = paba.reg@para[1]), color = "blue") +
+  #geom_abline(aes(slope = coef(mod.rq)[2], intercept = coef(mod.rq)[1])) +
+  #geom_abline(aes(slope = paba.reg@para[2], intercept = paba.reg@para[1]), color = "blue") +
   #geom_abline(aes(slope = dem.reg@para[2], intercept = dem.reg@para[1]), color = "red") +
   geom_abline(aes(slope = 1, intercept = 0), lty = 2) +
   ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.85, size = 3) +
   theme_custom() +
-  theme(legend.position = "none")
-
-res2 %>%
-  count(within0.5 = abs(ed50_2020-ed50_2021) < 0.5) %>%
-  mutate(perc = n / nrow(res2))
-
-#
-cor.test(res2$ed50_2020, res2$ed50_2021, method = "spearman")
-
-res2 <- res2 %>%
-  mutate(top_2020 = ed50_2020 > quantile(res2$ed50_2020, 0.5),
-         top_2021 = ed50_2021 > quantile(res2$ed50_2021, 0.5))
-
-res2 %>%
-  count(top_2020, top_2021)
-
-ggplot(res2, aes(x = ed50_2020, y = ed50_2021, color = top_2020, shape = top_2021)) +
-  geom_point()
+  theme(legend.position = "none") +
+  #facet_wrap(~nursery) +
+  geom_smooth(method = "lm", se = FALSE)
+```
 
 
-res2 %>%
-  sample_n(2) %>%
-  if(range(ed50_2020) >= 1) {
-    
-  }
-
-
-calc <- function(z) {
-  res3 <- vector()
-  for (i in 1:nrow(res2)) {
-    x <- res2[i, ]
-    for (j in 1:nrow(res2)) {
-      y <- res2[j, ]
-      if (abs(x$ed50_2020 - y$ed50_2020) >= z) {
-        rank20 <- x$ed50_2020 > y$ed50_2020
-        rank21 <- x$ed50_2021 > y$ed50_2021
-        res3 <- c(res3, rank20 == rank21)
-      }
-    }
-  }
-  res4 <- table(res3)
-  return(res4["TRUE"]/sum(res4))
-}
-calc(0)
-calc(0.25)
-calc(0.5)
-calc(1)
-calc(1.2)
-calc(1.3)
-calc(1.4)
-calc(1.5)
-
-
-genets <- res2$geno
-combos <- apply(combn(genets,2),2,paste,collapse='_')
-pairs <- tibble(pair = combos) %>%
-  separate(pair, into = c("genet1", "genet2"), sep = "_")
-
-long
-
-ed50_2020 %>%
-  select(geno, ed50_2020) %>%
-  dist()
-
-dist(ed50_2020$ed50_2020)
-
-left_join(pairs, ed50_2020)
-
-combos <- combn(genets, 2, simplify = FALSE)
-tibble(grp = unlist(combos))
-
-
-
-
-
-
-x = c(1,2,3,4,5)    
-apply(combn(x,2),2,paste,collapse='_')
-
-
-
-
+```{r}
 # Get all pairwise differences between genos in 2020 and 2021
 genos <- alldf$geno
 diffs2020 <- outer(alldf$ed50_2020, alldf$ed50_2020, `-`)
@@ -412,7 +362,6 @@ mod <- glm(higher21 ~ diff.20, data = diffs2, family = "binomial")
 anova(mod)
 
 # Get probability that rank order is same given difference in 2020 ED50s
-pred <- tibble(diff.20 = seq(0, 2, 0.01))
 emm <- emmeans::emmeans(mod, specs = "diff.20", at = list(diff.20 = seq(0,2,0.01)), type = "response")
 data.frame(emm) %>%
   ggplot(aes(x = diff.20, y = prob)) +
@@ -422,16 +371,91 @@ data.frame(emm) %>%
        y = "Probability rank order holds in 2021")
 
 # What about groups of n=5 genotypes?
+rand <- function(n) {
+  df <- drop_na(alldf) %>% slice_sample(n = n*2) %>%
+    mutate(group = factor(c(rep(1, 5), rep(2, 5))))
+  mod20 <- aov(ed50_2020 ~ group, data = df)
+  tuk20 <- TukeyHSD(mod20)
+  mod21 <- aov(ed50_2021 ~ group, data = df)
+  tuk21 <- TukeyHSD(mod21)
+  c(tuk20$group[c(1,4)], tuk21$group[c(1,4)])
+}
+res <- replicate(10000, rand(5))
 
+res <- as_tibble(t(res)) %>%
+  rename(diff.20 = V1, p.20 = V2, diff.21 = V3, p.21 = V4)
+res %>%
+  filter(p.20 < 0.05) %>%
+  ggplot(aes(x = diff.20, y = diff.21)) +
+  geom_point()
+res %>%
+  filter(p.20 < 0.05) %>%
+  ggplot(aes(x = abs(diff.20), y = abs(diff.21))) +
+  geom_point()
+
+# Bland-Altman plot
+alldf <- alldf %>%
+  mutate(avg = (ed50_2021 + ed50_2020)/2,
+         diff = ed50_2021 - ed50_2020)
+ggplot(alldf, aes(x = avg, y = diff)) +
+  geom_point()
+
+mean_diff <- mean(alldf$diff, na.rm = T)
+lower <- mean_diff - 1.96*sd(alldf$diff, na.rm = T)
+upper <- mean_diff + 1.96*sd(alldf$diff, na.rm = T)
+upper
+
+# If select top X from 2020 data, what is chance they have significantly higher than average ED50 in 2021?
+X <- 10
+topX <- alldf %>%
+    arrange(-ed50_2020) %>%
+    slice(1:X)
+
+hi <- alldf %>%
+  mutate(group = geno %in% topX$geno)
+mod <- lm(ed50_2021 ~ group, data = hi)
+anova(mod)
+
+emm <- emmeans::emmeans(mod, specs = "group")
+emmeans::contrast(emm, "eff")
+```
+
+```{r}
+install.packages("rptR")
+library(rptR)
+long
+out <- rpt(ed50 ~ nursery * year  + (1|geno), data = long, grname = "geno")
+out
+out
+
+lowvar <- alldf %>% filter(std.error_2021 < 0.5, std.error_2020 < 0.25)
+out <- rpt(ed50 ~ nursery * year + (1|geno), data = filter(long, geno %in% lowvar$geno), 
+                                                            grname = c("geno", "Fixed"))
+out
+ggplot(alldf, aes(x = ed50_2020, y = ed50_2021, color = std.error_2021 < 0.5 & std.error_2020 < 0.25)) +
+  geom_point()
+
+
+#RC
+# Mean within-subject sample variance
+alldf <- alldf %>% rowwise() %>% mutate(var = var(c(ed50_2021, ed50_2020)))
+var_w <- mean(alldf$var, na.rm = TRUE)
+# Within-subject sample standard deviation
+s_w <- sqrt(var_w)
+# Coefficient of repeatability
+rc <- 1.96 * sqrt(2) * s_w
+rc   # 95% of the time, repeat measurements will differ by less than rc
 ```
 
 ```{r}
 # Going back to .pim files and putting 2 AOIs per coral
 # 9/6/21: 
-#   pim file 1 is wrong corals / image saved incorrectly -- cannot get new data
-#   pim file 2 only contains top 3 out of 5 corals from the rack in the image
-#   pim file 3 is wrong corals
-#   pim file 36 is the SAME as 35 -- must have been saved incorrectly...
-
+#  GOT IT >>> pim file 1 is wrong corals / image saved incorrectly -- cannot get new data
+#   GOT IT pim file 2 only contains top 3 out of 5 corals from the rack in the image
+#   GOT IT pim file 3 is wrong corals
+#   GOT IT pim file 36 is the SAME as 35 -- must have been saved incorrectly...
+# 9/8/21
+#   pim file 21 is the SAME as 20 -- / previous corals...AHA just figured this out.... go back to 9/6 to recover^^^
+#   pim file 35: take FIRST of three rows (manually)
 ```
 
