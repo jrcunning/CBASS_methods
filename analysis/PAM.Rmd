@@ -431,7 +431,7 @@ emm <- emmeans::emmeans(mod, specs = "diff.20", at = list(diff.20 = seq(0,1.5,0.
 fig2 <- ggplot(data.frame(emm), aes(x = diff.20, y = prob)) +
   geom_line() +
   geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL), alpha = 0.2) +
-  labs(x = "Difference in ED50 (°C) in Test 1 (2020)",
+  labs(x = "Pairwise difference in ED50 (°C) in Test 1 (2020)",
        y = "Probability of same rank order in Test 2 (2021)") +
   scale_x_continuous(expand = c(0, 0)) +
   theme_custom() +
