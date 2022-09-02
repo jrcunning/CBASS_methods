@@ -26,7 +26,9 @@ theme_custom <- function() {
       panel.grid.minor = element_blank(), 
       panel.background = element_blank(),
       panel.border = element_rect(color = "black", fill = NA),
-      legend.background = element_rect(fill = NA, colour = NA)
+      legend.background = element_rect(fill = NA, colour = NA),
+      axis.title = element_text(size = 7),
+      axis.text = element_text(size = 5)
     )
 }
 
@@ -307,7 +309,10 @@ res <- augment(mod, long) %>%
 res2 <- res %>%
   select(nursery, geno, year, ed50_adj) %>%
   pivot_wider(names_from = year, values_from = ed50_adj)
+```
 
+# Compare ED50s from 2021 to 2020
+```{r}
 # Model adjusted ED50ʻs from 2021 vs. 2020
 ## Linear model
 mod.lm <- lm(ed50_2021 ~ ed50_2020, data = res2)
@@ -318,24 +323,80 @@ paba.reg <- mcreg(res2$ed50_2020, res2$ed50_2021, method.reg = "PaBa")
 dem.reg <- mcreg(res2$ed50_2020, res2$ed50_2021, method.reg = "Deming")
 mod.rq <- rq(ed50_2021 ~ ed50_2020, data = res2)
 
-# Plot with different regression lines
-res2 %>%
+# Get ECDF for plotting
+res2 <- res2 %>%
+  mutate(diff = abs(ed50_2021 - ed50_2020))
+dens <- density(res2$diff, adjust = 0.1)
+dens <- tibble(x = dens$x, y = dens$y) %>%
+  mutate(cd = cumsum(y)/sum(y))
+# Get degree diffs for x% of cases from cumulative density
+myvals <- tibble(perc = c(0.5, 0.9)) %>%
+  mutate(diff = map_dbl(perc, ~ dens$x[which.min(abs(. - dens$cd))]))
+
+# Plot ED50s with different regression lines
+panelA <- res2 %>%
   ggplot(aes(x = ed50_2020, y = ed50_2021)) +
-  geom_point() + #aes(color = abs(ed50_2020-ed50_2021) < 0.5)) +
+  geom_point(size = 1, pch = 1, stroke = 0.25) + #aes(color = abs(ed50_2020-ed50_2021) < 0.5)) +
   #geom_label(aes(label = geno)) +
   #geom_abline(aes(slope = coef(mod.lm)[2], intercept = coef(mod.lm)[1])) +
-  geom_abline(aes(slope = coef(mod.rq)[2], intercept = coef(mod.rq)[1])) +
-  geom_abline(aes(slope = paba.reg@para[2], intercept = paba.reg@para[1]), color = "blue") +
+  #geom_abline(aes(slope = coef(mod.rq)[2], intercept = coef(mod.rq)[1])) +
+  #geom_abline(aes(slope = paba.reg@para[2], intercept = paba.reg@para[1]), color = "blue") +
   #geom_abline(aes(slope = dem.reg@para[2], intercept = dem.reg@para[1]), color = "red") +
-  geom_abline(aes(slope = 1, intercept = 0), lty = 2) +
-  ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.85, size = 3) +
+  geom_ribbon(aes(x = seq(34.8, 36.4, length.out = 50), 
+                  ymin = ..x.. - filter(myvals, perc == 0.5) %>% pull(diff), 
+                  ymax = ..x.. + filter(myvals, perc == 0.5) %>% pull(diff)), alpha = 0.2) +
+  geom_ribbon(aes(x = seq(34.8, 36.4, length.out = 50),
+                  ymin = ..x.. - filter(myvals, perc == 0.9) %>% pull(diff), 
+                  ymax = ..x.. + filter(myvals, perc == 0.9) %>% pull(diff)), alpha = 0.2) +
+  geom_abline(aes(slope = 1, intercept = 0), lty = 2, lwd = 0.25) +
+  #ggpubr::stat_cor(method = "spearman", label.y = 36.7, label.x = 34.9, size = 3) +
+  labs(x = "ED50 (°C) in Test 1 (2020)", y = "ED50 (°C) in Test 2 (2021)") +
   theme_custom() +
-  theme(legend.position = "none")
-  #facet_wrap(~nursery) +
-  #geom_smooth(method = "lm", se = FALSE)
+  theme(legend.position = "none") +
+  coord_fixed(expand = FALSE); panelA
+
+# Visualize ECDF
+panelB <- ggplot(res2, aes(x = diff)) +
+  #geom_segment(data = myvals, aes(y = perc, yend = perc, x = 0, xend = diff), lty = 2) +
+  #geom_segment(data = myvals, aes(x = diff, xend = diff, y = 0, yend = perc), lty= 2) +
+  geom_rect(data = myvals, aes(xmin = 0, xmax = diff, ymin = 0, ymax = perc), alpha = 0.2) +
+  stat_ecdf(color = "red") +
+  scale_x_continuous(breaks = seq(0,1.2,0.1), expand = c(0, 0), limits = c(0, 1.1)) +
+  scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 0.9, 1), labels = scales::percent, expand = c(0, 0)) +
+  labs(x = "|Test 1 - Test 2| ΔED50 (°C)", y = "Percent of cases") +
+  theme_custom(); panelB 
+
+# Visualize histogram of diffs
+panelC <- res2 %>%
+  mutate(diff = abs(ed50_2021 - ed50_2020)) %>%
+  ggplot(aes(x = diff)) + 
+  geom_histogram(aes(y = (..count..)/sum(..count..)), binwidth = 0.05, boundary = 0, closed = "left") +
+  scale_x_continuous(breaks = seq(0,1.2,0.1), expand = c(0, 0), limits = c(0, 1.1)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.17)) +
+  labs(x = "|Test 1 - Test 2| ΔED50 (°C)", y = "Percent of cases") +
+  theme_custom(); panelC
+
+col2 <- cowplot::plot_grid(panelB, panelC, ncol = 1, labels = c("B", "C"))
+#cowplot::plot_grid(panelA, col2, ncol = 2, labels = c("A", ""))
+
+fig1 <- cowplot::plot_grid(panelA, panelB, ncol = 2, labels = "AUTO")
+fig1
+ggsave(fig1, filename = "output/fig1.png", width = 89, height = 75, units = "mm")
 ```
 
 
+# Estimate repeatability of ED50 for same genotype
+```{r}
+# Repeatability
+library(rptR)
+out <- rpt(ed50 ~ nursery * year  + (1|geno), data = long, grname = c("geno", "Overdispersion", "Fixed", "Residual"), nboot = 1000, parallel = TRUE, adjusted = TRUE)
+out
+plot(out)
+summary(out)
+```
+
+
+# Repeatability of pairwise ranks
 ```{r}
 # Get all pairwise differences in adjusted ED50 between high confidence genos in 2020 and 2021
 genos <- res2$geno
@@ -365,24 +426,24 @@ mod <- glm(higher21 ~ diff.20, data = diffs2, family = "binomial")
 anova(mod)
 
 # Get probability that rank order is same given difference in 2020 ED50s
-emm <- emmeans::emmeans(mod, specs = "diff.20", at = list(diff.20 = seq(0,2,0.01)), type = "response")
-data.frame(emm) %>%
-  ggplot(aes(x = diff.20, y = prob)) +
+emm <- emmeans::emmeans(mod, specs = "diff.20", at = list(diff.20 = seq(0,1.5,0.01)), type = "response")
+
+fig2 <- ggplot(data.frame(emm), aes(x = diff.20, y = prob)) +
   geom_line() +
   geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL), alpha = 0.2) +
-  labs(x = "Difference in ED50 measured in 2020",
-       y = "Probability rank order holds in 2021")
+  labs(x = "Difference in ED50 (°C) in Test 1 (2020)",
+       y = "Probability of same rank order in Test 2 (2021)") +
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_custom() +
+  coord_cartesian(ylim = c(0.5, 1), expand = c(0, 0)); fig2
+
+ggsave(fig2, filename = "output/fig2.png", width = 89, height = 89, units = "mm")
 ```
 
-# Estimate repeatability
-```{r}
-# Repeatability
-library(rptR)
-out <- rpt(ed50 ~ nursery * year  + (1|geno), data = long, grname = "geno")
-plot(out)
-summary(out)
 
 
+
+```{r old_code, include = F, eval = F, echo = F}
 
 #Repeatability coefficient
 # Mean within-subject sample variance
@@ -395,17 +456,26 @@ rc95 <- 1.96 * sqrt(2) * s_w
 rc95   # 95% of the time, repeat measurements will differ by less than rc     0.84
 rc90 <- 1.645 * sqrt(2) * s_w
 rc90
-```
 
-```{r}
-# Going back to .pim files and putting 2 AOIs per coral
-# 9/6/21: 
-#  GOT IT >>> pim file 1 is wrong corals / image saved incorrectly -- cannot get new data
-#   GOT IT pim file 2 only contains top 3 out of 5 corals from the rack in the image
-#   GOT IT pim file 3 is wrong corals
-#   GOT IT pim file 36 is the SAME as 35 -- must have been saved incorrectly...
-# 9/8/21
-#   pim file 21 is the SAME as 20 -- / previous corals...AHA just figured this out.... go back to 9/6 to recover^^^
-#   pim file 35: take FIRST of three rows (manually)
+# statistical repeatability
+probs <- tibble(
+  p = seq(0.01, 0.99, 0.01),
+  t = qt((1-seq(0.01,0.99,0.01))/2, lower.tail = F, df = Inf),
+  y = t * sqrt(2) * s_w
+)
+
+ggplot(probs, aes(y = p, x = y)) +
+  geom_line() +
+  labs(y = "Percent of cases (genets)", x = "Test - retest difference in ED50 (°C)") +
+  geom_vline(aes(xintercept = 0.95), lty = 2) +
+  annotate("text", x = 0.8, y = 0.7, label = "Repeatability coefficient")
+
+val <- qt((1-seq(0.01,0.99,0.01))/2, lower.tail = F, df = Inf) * sqrt(2) * s_w
+plot(seq(0.01,0.99,0.01), val)
+pt(seq(0.01,0.99,0.01), df = Inf) * sqrt(2) * s_w
+plot(seq(0.01,0.99,0.01), tt)
+
+
+
 ```
 
