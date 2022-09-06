@@ -31,6 +31,14 @@ theme_custom <- function() {
     )
 }
 
+# Labeller for treatments
+treatment_labeller <- function(variable, value){
+  return(list(
+  'Normal'="High light",
+  'lowLight'="Low light")[value])
+}
+
+
 # Function to pivot IPAM data to long form with column for AOI
 ipam_convert <- function(data) {
   data %>% select_if(~ !any(is.na(.))) %>%
@@ -102,6 +110,9 @@ df <- pam %>%
          max_temp = as.numeric(max_temp)) %>%
   select(geno = genet, nursery, treatment, max_temp, f, fm, fvfmraw, fvfm)
 
+# Replace significant outlier for geno129, normal light, 30°C, where Fv/Fm was < 0.4, while fitted curve suggests should be around 0.55. This significantly affects ED50 so changing this values to 0.55.
+df[df$geno == 129 & df$treatment == "Normal" & df$max_temp == 30, "fvfm"] <- 0.5
+
 # Define function to fit 3-parameter LL model to data and return NULL if fitting error
 ll3 <- function(data) {
   drm(fvfm ~ max_temp, data = data, 
@@ -135,6 +146,70 @@ vals <- initmods %>%
   mutate(problem = "none")
 ```
 
+```{r drc_diagnostics}
+
+# #### diagnostics
+# Extract hill parameter values from model fits
+# hill <- initmods %>%
+#   select(nursery, geno, pars) %>%
+#   unnest(pars) %>%
+#   filter(term == "hill")
+# ggplot(hill) +
+#   geom_histogram(aes(x = estimate))
+# hill %>% arrange(estimate)
+# 
+# maxes <- initmods %>%
+#   select(nursery, geno, pars) %>%
+#   unnest(pars) %>%
+#   filter(term == "max")
+# ggplot(maxes) +
+#   geom_histogram(aes(x = estimate))
+# maxes %>% arrange(-estimate)
+
+# # Identify problematic data points based on cook's distance and residuals
+counts <- vals %>%
+  group_by(treatment, geno) %>%
+  summarise(n = sum(!is.na(fvfm)))
+dff <- vals %>%
+  left_join(counts) %>%
+  group_by(treatment, geno) %>%
+  mutate(cooksd.thresh = 4/n) %>%   # Calculate cook's distance threshold as 4/n
+  mutate(max_to_remove = floor(n * 0.2)) %>%
+  ungroup() %>%
+  mutate(problem = case_when(.cooksd > cooksd.thresh ~ "high cook's distance",
+                             TRUE ~ "none")) %>%
+  group_by(treatment, geno, outlier = problem %in% c("high cook's distance", "high residual")) %>%
+  mutate(n.outliers = n(),
+         rank.out = order(.cooksd, decreasing = TRUE)) %>%
+  ungroup() %>%
+  mutate(fvfm = case_when(outlier & rank.out <= max_to_remove ~ .fitted,
+                          TRUE ~ fvfm))
+
+# Refit models without problematic points
+fmods <- dff %>%
+  select(treatment, geno, max_temp, f, fm, fvfmraw, problem, fvfm) %>%
+  nest(data = c(max_temp, f, fm, fvfmraw, fvfm, problem)) %>%
+  # Fit the model to each coral
+  mutate(ll3 = map(data, tryll3)) %>%
+  # Get model parameters and fitted values/residuals
+  mutate(pars = map(ll3, tidy),
+         pred = map2(ll3, data, ~augment(.x, drop_na(.y, fvfm))))
+
+# Extract ed50 parameter values from model fits
+fed50 <- fmods %>%
+  select(treatment, geno, pars) %>%
+  unnest(pars) %>%
+  filter(term == "ED50")
+
+# Collect raw data, fitted values, and ed50 estimates
+fvals <- fmods %>%
+  select(treatment, geno, pred) %>%
+  unnest(pred) %>%
+  full_join(fed50) %>%
+  full_join(select(dff, treatment, geno, max_temp, f, fm, fvfmraw, problem, fvfm)) %>%
+  rename(ed50 = estimate)
+```
+
 
 # Plot dose response curves for each genotype
 ```{r plot, fig.width = 10, fig.height = 10}
@@ -153,33 +228,42 @@ res2 <- ed50 %>%
   select(geno, treatment, estimate) %>%
   pivot_wider(names_from = treatment, values_from = estimate)  %>%
   mutate(diff = lowLight - Normal,
-         grp = factor(grp))
+         grp = recode_factor(grp, "3" = "a", "4" = "b", "2" = "c", "1" = "d"))#levels = c("3", "4", "2", "1")))
 
 #Linear model fit
 mod <- lm(lowLight ~ Normal, data = res2)
 mod
-# Estimate intercept with slope = 1
+# Estimate/fit intercept with slope = 1
+## Also, weight higher Normal ed50 points higher, since we think the lowest normal ed50 points are bucking the trend...so basically, fit line with slope 1 more to those points we think it applies to
 b1 <- 1
-a <- mean(res2$lowLight - b1 * res2$Normal)
+#a <- weighted.mean(res2$lowLight - b1 * res2$Normal, w = (res2$Normal-34)^2)
+## Or, get the intercept for JUST the corals that seem to follow the line!
+a <- res2 %>% 
+  filter(Normal > 34.9) %>%
+  summarise(mean = mean(lowLight - b1 * Normal))
 
-sds <- ed50 %>%
-  group_by(treatment) %>%
-  summarise(mean = mean(estimate), sd = sd(estimate))
-ggplot(sds, aes(x = treatment, y = mean)) +
-  geom_point() +
-  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.3) +
-  theme_custom()
 
-panelA <- ggplot(res2, aes(x = Normal, y = lowLight, color = grp)) +
-  geom_point() +
-  stat_summary(geom = "errorbar", fun = "sd") +
+# sds <- ed50 %>%
+#   group_by(treatment) %>%
+#   summarise(mean = mean(estimate), sd = sd(estimate))
+# ggplot(sds, aes(x = treatment, y = mean)) +
+#   geom_point() +
+#   geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.3) +
+#   theme_custom()
+
+panelA <- ggplot(res2, aes(x = Normal, y = lowLight)) +
+  geom_smooth(span = 1, lwd = 0.5) +
+  geom_point(aes(color = grp)) +
   #geom_label(aes(label = geno, color = grp)) +
   #geom_abline(slope = 1, intercept = 0, lty = 2) +
-  geom_abline(intercept = a, slope = b1, lty = 2) +
-  coord_fixed() +
+  geom_abline(intercept = a[[1]], slope = b1, lty = 2) +
+  #geom_abline(intercept = a + 0.72, slope = b1, lty = 2) +
+  #geom_abline(intercept = a - 0.72, slope = b1, lty = 2) +
+  coord_fixed(ylim = c(35.6, 36.7)) +
+  labs(x = "ED50 (°C) under high light", y = "ED50 (°C) under low light") +
   #annotate("errorbar", aes(x = 35, y = 36, xmin = 35.13521 - 0.278297, xmax = 35.13521 + 0.278297)) +
   theme_custom() +
-  theme(legend.position = "none")
+  theme(legend.position = "none"); panelA
 
 
 mod <- res2 %>% 
@@ -187,24 +271,46 @@ mod <- res2 %>%
   lm(ed50 ~ treatment * grp, data = .)
 anova(mod)
 emm <- data.frame(emmeans::emmeans(mod, specs = c("treatment", "grp")))
+emmeans::emmeans(mod, specs = c("treatment", "grp"), contr = "pairwise", by = "treatment")
 
 panelB <- ed50 %>%
   left_join(res2) %>%
+  mutate(treatment = factor(treatment, levels = c("Normal", "lowLight"))) %>%
   ggplot(aes(x = grp, y = estimate, color = grp)) +
   geom_point(alpha = 0.5) +
-  geom_point(data = emm, aes(y = emmean), pch = 2, size = 2) +
+  geom_point(data = emm, aes(y = emmean), pch = 3, size = 1.5) +
   geom_errorbar(data = emm, aes(y = emmean, ymin = emmean - SE, ymax = emmean + SE),
                 width = 0.5) +
-  facet_wrap(~ treatment, scales = "free") +
+  facet_wrap(~ treatment, labeller = treatment_labeller) +
+  labs(x = "Group", y = "ED50 (°C)") +
   theme_custom() +
   theme(legend.position = "none"); panelB
 
 
-cowplot::plot_grid(panelA, panelB, ncol = 2)
+fig3 <- cowplot::plot_grid(panelA, panelB, ncol = 2); fig3
   
+ggsave(fig3, filename = "output/fig3.png", width = 89, height = 52.5, units = "mm")
 
 # Do some pairwise comparisons fall outside the test-rest probability range?
 
+```
+
+
+```{r}
+# so all are within the 90% test-retest difference of 0.72 degrees, based on reproducibility experiment, so this all is within what we might expect from test-retest variability. But, the lowest four ed50s at normal light all did better than expected at low light. what are the chances that this would happen randomly? some kind of a permutation test?
+# model the normal ed50 vs. residual of lowLight ed50?
+# can we statistically model what the lowLight ed50s should be based on the normal ed50s and the known test-retest variability (like 1000 permutations)? then see that chances that actual lowLight ed50s could have been observed in this scenario?
+# like the residuals are not random with respect to the Normal ed50...
+
+res2 <- res2 %>%
+  mutate(fitted = Normal + a,
+         resid = lowLight - fitted)
+ggplot(res2, aes(x = Normal, y = resid)) + geom_point() +
+  geom_smooth(span = 0.75)
+
+mod <- lm(resid ~ Normal, data = res2)
+anova(mod)
+plot(mod)
 ```
 
 
