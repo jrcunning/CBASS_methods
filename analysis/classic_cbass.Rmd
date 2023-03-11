@@ -9,7 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-
+# Load libraries and custom functions
 ```{r}
 library(drc)
 library(quantreg)
@@ -27,18 +27,10 @@ theme_custom <- function() {
       panel.background = element_blank(),
       panel.border = element_rect(color = "black", fill = NA),
       legend.background = element_rect(fill = NA, colour = NA),
-      axis.title = element_text(size = 7),
-      axis.text = element_text(size = 5)
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 7)
     )
 }
-
-# # Labeller for treatments
-# treatment_labeller <- function(variable, value){
-#   return(list(
-#   'Normal'="High light",
-#   'lowLight'="Low light")[value])
-# }
-# 
 
 # Function to pivot IPAM data to long form with column for AOI
 ipam_convert <- function(data) {
@@ -47,6 +39,165 @@ ipam_convert <- function(data) {
   separate(name, into = c("var", "aoi"), sep = "(?<=[A-Za-z_])(?=[0-9])")
 }
 ```
+
+# Plot temperature profiles
+
+### CBASS experiment profiles
+```{r}
+# Read in CBASS temperature logs and filter for just December 4th run
+cbasslogs <- list("data/classic_cbass/temperature_logs/LOG_28.5_35_34_37_right.TXT",
+                  "data/classic_cbass/temperature_logs/LOG_31_38_33_36_left.TXT")
+
+cbasstemps <- map_dfr(cbasslogs, read_csv) %>%
+  # Remove internal header rows
+  filter(PrintDate != "PrintDate") %>%
+  # Format date and time
+  mutate(date = as_date(Date, format = "%Y_%m_%d")) %>%
+  unite(time, Th, Tm, Ts, sep = ":") %>%
+  unite(dttm, date, time) %>%
+  mutate(dttm = ymd_hms(dttm)) %>%
+  # Filter to just December 4th run
+  filter(dttm >= as_datetime("2022-12-04 11:20:00") & dttm <= as_datetime("2022-12-04 20:00:00")) %>%
+  select(dttm, ShortUniqueID, T1SP, TempT1, T2SP, TempT2, T3SP, TempT3, T4SP, TempT4) %>%
+  # Pivot to long format
+  pivot_longer(starts_with("T"), names_to = "key", values_to = "temp") %>%
+  # Remove rows where temp sensors gave error codes
+  filter(temp > 0, temp < 50) %>%
+  # Parse tanks, setpoints, and actual temps
+  mutate(probe = str_extract(key, "T[0-9]"),
+         key = case_when(grepl("SP", key) ~ str_sub(key, 3, 4),
+                         TRUE ~ str_sub(key, 1, 4)),
+         key = tolower(key)) %>%
+  # Filter to only get one temperature reading per second by averaging
+  group_by(dttm, ShortUniqueID, probe, key) %>%
+  summarize(temp = mean(as.numeric(temp), na.rm = TRUE)) %>%
+  ungroup() %>%
+  # Create columns for set point and actual temperature
+  pivot_wider(names_from = key, values_from = temp) %>%
+  # Tidy column types
+  mutate(probe = factor(probe)) %>%
+  # Add maximum setpoint temperature as max_temp column
+  group_by(ShortUniqueID, probe) %>%
+  mutate(max_temp = factor(max(sp, na.rm = TRUE))) %>%
+  ungroup()
+
+cbasstempsfig <- ggplot(cbasstemps, aes(x = dttm, y = temp, color = max_temp)) +
+  geom_line() +
+  theme_custom() +
+  theme(legend.position = "none") +
+  scale_y_continuous(limits = c(26.9, 38.2), breaks = seq(27, 38, 1)) +
+  labs(x = "Time", y = "Temperature (°C)"); cbasstempsfig
+
+ggsave(cbasstempsfig, filename = "output/cbass_temps.png", width = 60, height = 80, units = "mm")
+  
+
+```
+
+### Classic experiment profiles
+```{r}
+temps <- read_csv("data/classic_cbass/temperature_logs/LOG_CLASSIC.TXT") %>%
+    # Remove internal header rows
+    filter(PrintDate != "PrintDate") %>%
+    # Format date and time
+    mutate(date = as_date(Date, format = "%Y_%m_%d")) %>%
+    unite(time, Th, Tm, Ts, sep = ":") %>%
+    unite(dttm, date, time) %>%
+    mutate(dttm = ymd_hms(dttm)) %>%
+    select(dttm, T1SP, TempT1, T2SP, TempT2, T3SP, TempT3, T4SP, TempT4) %>%
+    # Pivot to long format
+    pivot_longer(starts_with("T"), names_to = "key", values_to = "temp") %>%
+    # Remove rows where temp sensors gave error codes
+    filter(temp > 0, temp < 50) %>%
+    # Parse tanks, setpoints, and actual temps
+    mutate(probe = str_extract(key, "T[0-9]"),
+           key = case_when(grepl("SP", key) ~ str_sub(key, 3, 4),
+                           TRUE ~ str_sub(key, 1, 4)),
+           key = tolower(key)) %>%
+    # Filter to only get one temperature reading per second by averaging
+    group_by(dttm, probe, key) %>%
+    summarize(temp = mean(as.numeric(temp), na.rm = TRUE)) %>%
+    ungroup() %>%
+    # Create columns for set point and actual temperature
+    pivot_wider(names_from = key, values_from = temp) %>%
+    # Tidy column types
+    mutate(probe = factor(probe)) %>%
+    # Add maximum setpoint temperature as max_temp column
+    group_by(probe) %>%
+    mutate(max_temp = max(sp, na.rm = TRUE)) %>%
+    ungroup()
+  
+
+# Sort out which probes were in which tanks at which times from field notes
+temps <- temps %>%
+  drop_na(temp) %>%
+  mutate(tank = case_when(
+    (dttm > as_datetime("2022-12-06 09:36:00") & dttm < as_datetime("2022-12-06 14:25:00") & probe == "T2") ~ "T3",
+    (dttm > as_datetime("2022-12-06 09:36:00") & dttm < as_datetime("2022-12-06 14:25:00") & probe == "T1") ~ "T2",
+    (dttm > as_datetime("2022-12-06 14:25:00") & dttm < as_datetime("2022-12-07 08:20:00") & probe == "T2") ~ "NA",
+    (dttm > as_datetime("2022-12-06 14:25:00") & dttm < as_datetime("2022-12-07 08:20:00") & probe == "T1") ~ "T2",
+    (dttm > as_datetime("2022-12-06 09:36:00") & dttm < as_datetime("2022-12-07 08:20:00") & probe == "T4") ~ "NA",
+    (dttm > as_datetime("2022-12-13 11:17:00") & probe == "T1") ~ "T2",
+    (dttm > as_datetime("2022-12-13 11:15:00") & probe == "T2") ~ "T1",
+    TRUE ~ as.character(probe))) %>%
+  filter(tank != "NA")
+
+# Filter out erroneous readings (probes removed from tank, or other obvious errors)
+library(pracma)
+t1 <- filter(temps, tank == "T1")
+ggplot(t1, aes(x = dttm, y = temp)) + geom_line()
+hamp1 <- hampel(t1$temp, 400, 2)
+t1 <- t1 %>% mutate(out = row_number() %in% hamp1$ind)
+ggplot(t1, aes(x = dttm, y = temp)) + geom_point(aes(color = out))
+
+t2 <- filter(temps, tank == "T2")
+ggplot(t2, aes(x = dttm, y = temp)) + geom_point()
+hamp2 <- hampel(t2$temp, 200, 10)
+t2 <- t2 %>% mutate(out = row_number() %in% hamp2$ind)
+ggplot(t2, aes(x = dttm, y = temp)) + geom_point(aes(color = out))
+
+t3 <- filter(temps, tank == "T3")
+ggplot(t3, aes(x = dttm, y = temp)) + geom_point()
+hamp3 <- hampel(t3$temp, 200, 10)
+t3 <- t3 %>% mutate(out = row_number() %in% hamp3$ind)
+ggplot(t3, aes(x = dttm, y = temp)) + geom_point(aes(color = out))
+
+t4 <- filter(temps, tank == "T4")
+ggplot(t4, aes(x = dttm, y = temp)) + geom_point()
+hamp4 <- hampel(t4$temp, 500, 4)
+t4 <- t4 %>% mutate(out = row_number() %in% hamp4$ind)
+ggplot(t4, aes(x = dttm, y = temp)) + geom_point(aes(color = out))
+
+# Replace outliers with imputed values
+temps <- temps %>%
+  arrange(tank, dttm) %>%
+  mutate(hamp = c(hamp1$y, hamp2$y, hamp3$y, hamp4$y))
+
+# Turn implicit missing values into explicit missing values so that lines are not drawn across gaps in data
+temps <- temps %>% 
+  select(dttm, tank, temp, hamp) %>%
+  complete(dttm, tank)
+
+# Plot classic temperatre profiles
+classictemps <- ggplot(temps, aes(x = dttm, y = hamp, color = tank)) +
+  geom_line(lwd = 0.5) +
+  scale_x_datetime(breaks = "days", date_labels = "%m/%d") +
+  theme_custom() +
+  theme(legend.position = "none") +
+  scale_y_continuous(limits = c(26.9, 38.2), breaks = seq(27, 38, 1)) +
+  labs(x = "Date", y = ""); classictemps
+
+ggsave(classictemps, filename = "output/classic_temps.png", width = 100, height = 80, units = "mm")
+```
+
+### Combined profiles figure
+```{r}
+library(cowplot)
+profiles <- plot_grid(cbasstempsfig, classictemps, nrow = 1, rel_widths = c(0.5, 0.5), labels = "auto")
+profiles
+ggsave(profiles, filename = "output/cbass_classic_profiles.png", width = 183, height = 80, units = "mm")
+```
+
+# -------------
 
 # CBASS experiment
 
@@ -217,13 +368,49 @@ vals <- vals %>%
 fvals <- fvals %>%
   mutate(geno = fct_reorder(factor(geno), ed50, .fun = mean))
 
-ggplot(vals, aes(x = max_temp, y = fvfm)) +
+ggplot(fvals, aes(x = max_temp, y = fvfm)) +
   geom_point() +
   geom_line(aes(y = .fitted)) +
-  geom_vline(aes(xintercept = estimate), data = ed50, lty = 2) +
-  geom_text(aes(x = estimate, y = 0.05, label = round(estimate, 2)), data = ed50,
+  geom_vline(aes(xintercept = estimate), data = fed50, lty = 2) +
+  geom_text(aes(x = estimate, y = 0.05, label = round(estimate, 2)), data = fed50,
             size = 2, nudge_x = -1.5) +
   facet_wrap(~geno)
+
+ggplot(fvals, aes(x = max_temp, y = .fitted, color = geno)) +
+  geom_line() +
+  scale_x_continuous(limits = c(30, 38)) +
+  theme_custom()
+
+
+
+# Get finer scale fitted values
+test <- fmods %>%
+  mutate(pred = map(ll3, ~augment(.x, newdata = data.frame(max_temp = seq(28.5, 40, 0.05)))))
+
+test2 <- test %>% 
+  select(geno, pred) %>%
+  unnest(pred) %>%
+  mutate(geno = factor(geno))
+
+drcs <- ggplot(test2, aes(x = max_temp, y = .fitted, group = geno)) +
+  geom_line(alpha = 0.7, lwd = 0.25) +
+  scale_x_continuous(limits = c(32, 38), expand = c(0, 0)) +
+  theme_custom() +
+  theme(legend.position = "none"); drcs
+
+ed50hist <- ggplot(fed50, aes(x = estimate)) +
+  geom_histogram(alpha = 0.5, position = "stack", breaks = seq(32,38,0.5)) +
+  scale_x_continuous(limits = c(32, 38), expand = c(0, 0)) +
+  theme_custom(); ed50hist
+
+drc_ed50_fig <- drcs + 
+  geom_histogram(data = fed50, inherit.aes = FALSE, alpha = 0.3,
+                 breaks = seq(32,38,0.25),
+                 aes(x = estimate, y = ..count../12.5)) +
+  scale_y_continuous(sec.axis = sec_axis(trans=~.*12.5, name = "Count of genet ED50s")) +
+  labs(x = "Temperature (°C)", y = "Fv/Fm"); drc_ed50_fig
+
+ggsave(drc_ed50_fig, filename = "output/drc_ed50.png", width = 80, height = 60, units = "mm")
 ```
 
 ### Write ED50s to file
@@ -293,202 +480,98 @@ pam <- pam1 %>%
 pam <- left_join(pam, md, by = c("date", "rack_no", "position"))
 ```
 
-
+### Plot figure for classic results
 ```{r}
 pam <- pam %>%
-  separate(frag_id, into = c("genotype", "frag"))
+  separate(frag_id, into = c("genotype", "frag")) 
+
+
+
+# Get control-heated diffs for each genotype with std error
+finalpam <- pam %>%
+  filter(date == "2022-12-13", var == "y_ii_") %>%
+  mutate(tank = factor(tank))
+library(lme4)
+mod <- lmer(value ~ treatment * genotype + (1|tank) + (1|frag), data = finalpam)
+car::Anova(mod)
+library(emmeans)
+emm <- emmeans(mod, specs = "treatment", by = "genotype")
+diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
+diffsres <- tibble(data.frame(diffs)) %>%
+  arrange(estimate) %>%
+  mutate(genotype = fct_reorder(factor(genotype), -estimate))
 
 res <- pam %>%
   filter(date == "2022-12-13", var == "y_ii_") %>%
   group_by(genotype, treatment) %>%
   summarize(mean = mean(value), sd = sd(value)) %>%
   ungroup() %>%
-  mutate(genotype = fct_reorder(factor(genotype), mean))
+  mutate(genotype = factor(genotype, levels = levels(diffsres$genotype)))
 
+classicresfig <- res %>%
+  mutate(treatment = factor(treatment, levels = c("high", "ambient"))) %>%
+  ggplot(aes(x = genotype, y = mean, shape = treatment)) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), lwd = 0.25, width = 0) +
+  geom_point(size = 2) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "Genet", y = "Fv/Fm"); classicresfig
 
-res %>%
-  ggplot(aes(x = genotype, y = mean, color = treatment)) +
-  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd)) +
-  geom_point()
-
-sbres <- res %>% 
-  select(genotype, treatment, mean) %>%
-  pivot_wider(names_from = treatment, values_from = mean) %>%
-  mutate(decline = high - ambient)
+ggsave(classicresfig, filename = "output/classicresfig.png", width = 80, height = 80, units = "mm")
 ```
+
+### Combined figure with CBASS and classic results
+```{r}
+cbass_classic_results <- plot_grid(drc_ed50_fig, classicresfig, nrow = 1, labels = "auto")
+ggsave(cbass_classic_results, filename = "output/cbass_classic_results.png", 
+       width = 183, height = 80, units = "mm")
+```
+
+#---------------
 
 # Compare CBASS vs. Classic
 ```{r}
-both <- sbres %>%
-  left_join(mutate(fed50, genotype = factor(geno)))
-
 library(ggpubr)
-ggplot(both, aes(x = estimate, y = decline)) +
-  geom_point() +
-  geom_smooth(method = "lm") +
-  geom_label(aes(label = genotype)) +
-  stat_cor(method = "pearson", label.y = -0) + 
-  labs(x = "Heat tolerance measured by CBASS (ED50)", y = "Heat tolerance measured in\nclassic bleaching experiment (Drop in Fv/Fm)")
 
-mod <- lm(decline ~ estimate, data = both)
+cbass <- fed50 %>%
+  mutate(genotype = factor(geno)) %>%
+  select(genotype, estimate, std.error)
+
+classic <- diffsres %>%
+  select(genotype, estimate, std.error = SE)
+
+# Linear model / OLS
+both <- full_join(cbass, classic, by = "genotype", suffix = c(".ed50", ".dfvfm"))
+mod <- lm(estimate.dfvfm ~ estimate.ed50, data = both)
 anova(mod)
 
-```
+# Passing Bablok regression
+library(mcr)
+PBreg <- mcreg(both$estimate.ed50, -both$estimate.dfvfm,
+               method.reg = "PaBa",  method.ci = "bootstrap", nsamples = 9999)
+PBfit <- calcResponse(PBreg, x.levels = seq(min(both$estimate.ed50), max(both$estimate.ed50), 0.01), 
+                      alpha = 0.1) %>% as_tibble()
 
-# Plot temperature profiles
-
-### CBASS experiment profiles
-```{r}
-# Read in CBASS temperature logs and filter for just December 4th run
-cbasslogs <- list("data/classic_cbass/temperature_logs/LOG_28.5_35_34_37_right.TXT",
-                  "data/classic_cbass/temperature_logs/LOG_31_38_33_36_left.TXT")
-
-cbasstemps <- map_dfr(cbasslogs, read_csv) %>%
-  # Remove internal header rows
-  filter(PrintDate != "PrintDate") %>%
-  # Format date and time
-  mutate(date = as_date(Date, format = "%Y_%m_%d")) %>%
-  unite(time, Th, Tm, Ts, sep = ":") %>%
-  unite(dttm, date, time) %>%
-  mutate(dttm = ymd_hms(dttm)) %>%
-  # Filter to just December 4th run
-  filter(dttm >= as_datetime("2022-12-04 11:20:00") & dttm <= as_datetime("2022-12-04 20:00:00")) %>%
-  select(dttm, ShortUniqueID, T1SP, TempT1, T2SP, TempT2, T3SP, TempT3, T4SP, TempT4) %>%
-  # Pivot to long format
-  pivot_longer(starts_with("T"), names_to = "key", values_to = "temp") %>%
-  # Remove rows where temp sensors gave error codes
-  filter(temp > 0, temp < 50) %>%
-  # Parse tanks, setpoints, and actual temps
-  mutate(probe = str_extract(key, "T[0-9]"),
-         key = case_when(grepl("SP", key) ~ str_sub(key, 3, 4),
-                         TRUE ~ str_sub(key, 1, 4)),
-         key = tolower(key)) %>%
-  # Filter to only get one temperature reading per second by averaging
-  group_by(dttm, ShortUniqueID, probe, key) %>%
-  summarize(temp = mean(as.numeric(temp), na.rm = TRUE)) %>%
-  ungroup() %>%
-  # Create columns for set point and actual temperature
-  pivot_wider(names_from = key, values_from = temp) %>%
-  # Tidy column types
-  mutate(probe = factor(probe)) %>%
-  # Add maximum setpoint temperature as max_temp column
-  group_by(ShortUniqueID, probe) %>%
-  mutate(max_temp = factor(max(sp, na.rm = TRUE))) %>%
-  ungroup()
-
-cbasstempsfig <- ggplot(cbasstemps, aes(x = dttm, y = temp, color = max_temp)) +
-  geom_line() +
+# Plot
+comp <- ggplot(both, aes(x = estimate.ed50, y = estimate.dfvfm)) +
+  #geom_smooth(method = "lm", color = "black", lwd = 0.5) +
+  geom_ribbon(data = PBfit, aes(x = X, ymin = -Y.LCI, ymax = -Y.UCI),
+              inherit.aes = FALSE, fill = "gray", alpha = 0.6) +
+  geom_line(data = PBfit, aes(x = X, y = -Y), color = "black") +
+  geom_point() +
+  geom_errorbar(aes(xmin = estimate.ed50 - std.error.ed50, xmax = estimate.ed50 + std.error.ed50),
+                lwd = 0.25) +
+  geom_errorbar(aes(ymin = estimate.dfvfm - std.error.dfvfm, ymax = estimate.dfvfm + std.error.dfvfm),
+                lwd = 0.25) +
+  #geom_label(aes(label = genotype)) +
+  stat_cor(method = "spearman", label.y = -0.08, label.x = 34.2, size = 2) + 
+  stat_cor(method = "pearson", label.y = -0.10, label.x = 34.2, size = 2) +
+  scale_x_continuous(breaks = seq(34, 37, 0.5), expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  coord_cartesian(xlim = c(34, 37), ylim = c(-0.55, -0.03)) +
   theme_custom() +
-  theme(legend.position = "none") +
-  scale_y_continuous(limits = c(26.9, 38.2), breaks = seq(27, 38, 1)) +
-  labs(x = "", y = "Temperature (°C)"); cbasstempsfig
+  labs(x = "CBASS ED50 (°C)", y = "Classic ∆Fv/Fm (heated - control)"); comp
 
-ggsave(cbasstempsfig, filename = "output/cbass_temps.png", width = 60, height = 80, units = "mm")
-  
-
-```
-
-
-### Classic experiment profiles
-```{r}
-temps <- read_csv("data/classic_cbass/temperature_logs/LOG_CLASSIC.TXT") %>%
-    # Remove internal header rows
-    filter(PrintDate != "PrintDate") %>%
-    # Format date and time
-    mutate(date = as_date(Date, format = "%Y_%m_%d")) %>%
-    unite(time, Th, Tm, Ts, sep = ":") %>%
-    unite(dttm, date, time) %>%
-    mutate(dttm = ymd_hms(dttm)) %>%
-    select(dttm, T1SP, TempT1, T2SP, TempT2, T3SP, TempT3, T4SP, TempT4) %>%
-    # Pivot to long format
-    pivot_longer(starts_with("T"), names_to = "key", values_to = "temp") %>%
-    # Remove rows where temp sensors gave error codes
-    filter(temp > 0, temp < 50) %>%
-    # Parse tanks, setpoints, and actual temps
-    mutate(probe = str_extract(key, "T[0-9]"),
-           key = case_when(grepl("SP", key) ~ str_sub(key, 3, 4),
-                           TRUE ~ str_sub(key, 1, 4)),
-           key = tolower(key)) %>%
-    # Filter to only get one temperature reading per second by averaging
-    group_by(dttm, probe, key) %>%
-    summarize(temp = mean(as.numeric(temp), na.rm = TRUE)) %>%
-    ungroup() %>%
-    # Create columns for set point and actual temperature
-    pivot_wider(names_from = key, values_from = temp) %>%
-    # Tidy column types
-    mutate(probe = factor(probe)) %>%
-    # Add maximum setpoint temperature as max_temp column
-    group_by(probe) %>%
-    mutate(max_temp = max(sp, na.rm = TRUE)) %>%
-    ungroup()
-  
-
-# Sort out which probes were in which tanks at which times from field notes
-temps <- temps %>%
-  drop_na(temp) %>%
-  mutate(tank = case_when(
-    (dttm > as_datetime("2022-12-06 09:36:00") & dttm < as_datetime("2022-12-06 14:25:00") & probe == "T2") ~ "T3",
-    (dttm > as_datetime("2022-12-06 09:36:00") & dttm < as_datetime("2022-12-06 14:25:00") & probe == "T1") ~ "T2",
-    (dttm > as_datetime("2022-12-06 14:25:00") & dttm < as_datetime("2022-12-07 08:20:00") & probe == "T2") ~ "NA",
-    (dttm > as_datetime("2022-12-06 14:25:00") & dttm < as_datetime("2022-12-07 08:20:00") & probe == "T1") ~ "T2",
-    (dttm > as_datetime("2022-12-06 09:36:00") & dttm < as_datetime("2022-12-07 08:20:00") & probe == "T4") ~ "NA",
-    (dttm > as_datetime("2022-12-13 11:17:00") & probe == "T1") ~ "T2",
-    (dttm > as_datetime("2022-12-13 11:15:00") & probe == "T2") ~ "T1",
-    TRUE ~ as.character(probe))) %>%
-  filter(tank != "NA")
-
-# Filter out erroneous readings (probes removed from tank, or other obvious errors)
-library(pracma)
-t1 <- filter(temps, tank == "T1")
-ggplot(t1, aes(x = dttm, y = temp)) + geom_line()
-hamp1 <- hampel(t1$temp, 400, 2)
-t1 <- t1 %>% mutate(out = row_number() %in% hamp1$ind)
-ggplot(t1, aes(x = dttm, y = temp)) + geom_point(aes(color = out))
-
-t2 <- filter(temps, tank == "T2")
-ggplot(t2, aes(x = dttm, y = temp)) + geom_point()
-hamp2 <- hampel(t2$temp, 200, 10)
-t2 <- t2 %>% mutate(out = row_number() %in% hamp2$ind)
-ggplot(t2, aes(x = dttm, y = temp)) + geom_point(aes(color = out))
-
-t3 <- filter(temps, tank == "T3")
-ggplot(t3, aes(x = dttm, y = temp)) + geom_point()
-hamp3 <- hampel(t3$temp, 200, 10)
-t3 <- t3 %>% mutate(out = row_number() %in% hamp3$ind)
-ggplot(t3, aes(x = dttm, y = temp)) + geom_point(aes(color = out))
-
-t4 <- filter(temps, tank == "T4")
-ggplot(t4, aes(x = dttm, y = temp)) + geom_point()
-hamp4 <- hampel(t4$temp, 500, 4)
-t4 <- t4 %>% mutate(out = row_number() %in% hamp4$ind)
-ggplot(t4, aes(x = dttm, y = temp)) + geom_point(aes(color = out))
-
-# Replace outliers with imputed values
-temps <- temps %>%
-  arrange(tank, dttm) %>%
-  mutate(hamp = c(hamp1$y, hamp2$y, hamp3$y, hamp4$y))
-
-# Turn implicit missing values into explicit missing values so that lines are not drawn across gaps in data
-temps <- temps %>% 
-  select(dttm, tank, temp, hamp) %>%
-  complete(dttm, tank)
-
-# Plot classic temperatre profiles
-classictemps <- ggplot(temps, aes(x = dttm, y = hamp, color = tank)) +
-  geom_line(lwd = 0.5) +
-  scale_x_datetime(breaks = "days", date_labels = "%b %d") +
-  theme_custom() +
-  theme(legend.position = "none") +
-  scale_y_continuous(limits = c(26.9, 38.2), breaks = seq(27, 38, 1)) +
-  labs(x = "", y = ""); classictemps
-
-ggsave(classictemps, filename = "output/classic_temps.png", width = 100, height = 80, units = "mm")
-```
-
-### Combined profiles figure
-```{r}
-library(cowplot)
-profiles <- plot_grid(cbasstempsfig, classictemps, nrow = 1, rel_widths = c(0.4, 0.6), labels = "auto")
-ggsave(profiles, filename = "output/cbass_classic_profiles.png", width = 183, height = 80, units = "mm")
+ggsave(comp, filename = "output/cbass_classic_comparison.png", width = 80, height = 80, units = "mm")
 ```
 
