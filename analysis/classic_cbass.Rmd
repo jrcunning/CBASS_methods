@@ -220,7 +220,7 @@ md <- md %>%
 # Replace certain rack names for joining with PAM data
 ## There were two '53C' racks on 20221204
 md <- md %>%
-  mutate(rack = case_when(date == "2022-12-04" & rack == "53C" & temp == 31 ~ "53C_31blue",
+  mutate(rack = case_when(date == "2022-12-04" & rack == "53C" & temp == 31 ~ "53C2",
                           TRUE ~ rack))
 
 ```
@@ -239,10 +239,10 @@ pam1 <- pamfiles %>%
          date = as_date(date, format = "%d.%m.%y"))
 
 # # For files that have multiple sat pulses -- keep the last one only
-# pam1 <- pam1 %>%
-#   group_by(file_id, date) %>%
-#   filter(no == max(no)) %>%
-#   ungroup()
+pam1 <- pam1 %>%
+  group_by(file_id, date) %>%
+  filter(no == max(no)) %>%
+  ungroup()
 
 # For each source file, convert to long form data with F, FM, and YII for each AOI
 pam1 <- pam1 %>%
@@ -263,10 +263,19 @@ pam <- pam1 %>%
   ungroup()
 
 pam <- left_join(pam, md) %>% left_join(corals)
+
+# # Double-check: should be 2 measurements of Fv/Fm per genet per temperature
+# pam %>%
+#   filter(var == "y_ii_") %>%
+#   count(tag_no, temp) %>%
+#   arrange(-n)
+# ## great, all have 2 meas.
 ```
 
 ### Fit dose-response curves
 ```{r}
+
+
 # Get Fv/Fm data and tidy
 df <- pam %>%
   mutate(max_temp = as.numeric(temp)) %>%
@@ -297,7 +306,7 @@ ed50 <- initmods %>%
   unnest(pars) %>%
   filter(term == "ED50")
 
-hist(ed50$estimate, breaks = 30)
+# hist(ed50$estimate, breaks = 30)
 
 # Collect raw data, fitted values, and diagnostics
 vals <- initmods %>%
@@ -321,16 +330,17 @@ dff <- vals %>%
   left_join(counts) %>%
   group_by(geno) %>%
   mutate(cooksd.thresh = 4/n) %>%   # Calculate cook's distance threshold as 4/n
-  mutate(max_to_remove = floor(n * 0.2)) %>%
+  mutate(max_to_remove = floor(n * 0.15)) %>%
   ungroup() %>%
   mutate(problem = case_when(.cooksd > cooksd.thresh ~ "high cook's distance",
+                             abs(.resid) > 0.5 ~ "high residual",
                              TRUE ~ "none")) %>%
   group_by(geno, outlier = problem %in% c("high cook's distance", "high residual")) %>%
   mutate(n.outliers = n(),
          rank.out = order(.cooksd, decreasing = TRUE)) %>%
   ungroup() %>%
-  mutate(fvfm = case_when(outlier & rank.out <= max_to_remove ~ .fitted,
-                          TRUE ~ fvfm))
+  mutate(fvfm = case_when(outlier & rank.out <= max_to_remove ~ NA_real_,
+                          TRUE ~ fvfmraw))
 
 # Refit models without problematic points
 fmods <- dff %>%
@@ -362,24 +372,21 @@ fvals <- fmods %>%
 ed50 <- ed50 %>%
   mutate(geno = factor(tag_no))
 
-
 vals <- vals %>%
   mutate(geno = fct_reorder(factor(tag_no), ed50, .fun = mean))
 fvals <- fvals %>%
   mutate(geno = fct_reorder(factor(geno), ed50, .fun = mean))
 
-ggplot(fvals, aes(x = max_temp, y = fvfm)) +
-  geom_point() +
-  geom_line(aes(y = .fitted)) +
-  geom_vline(aes(xintercept = estimate), data = fed50, lty = 2) +
+ggplot(fvals, aes(x = max_temp, y = fvfmraw)) +
+  facet_wrap(~geno) +
+  geom_point(aes(shape = problem)) +
+  geom_line(aes(y = .fitted), data = drop_na(fvals)) +
+  geom_line(aes(y = .fitted), data = vals, lty = 2) +
+  geom_vline(aes(xintercept = estimate), data = fed50, lty = 1, lwd = 0.25) +
+  geom_vline(aes(xintercept = estimate), data = ed50, lty = 2, lwd = 0.25) +
   geom_text(aes(x = estimate, y = 0.05, label = round(estimate, 2)), data = fed50,
             size = 2, nudge_x = -1.5) +
-  facet_wrap(~geno)
-
-ggplot(fvals, aes(x = max_temp, y = .fitted, color = geno)) +
-  geom_line() +
-  scale_x_continuous(limits = c(30, 38)) +
-  theme_custom()
+  scale_shape_manual(values = c(4, 2, 1))
 
 
 
@@ -399,12 +406,12 @@ drcs <- ggplot(test2, aes(x = max_temp, y = .fitted, group = geno)) +
   theme(legend.position = "none"); drcs
 
 ed50hist <- ggplot(fed50, aes(x = estimate)) +
-  geom_histogram(alpha = 0.5, position = "stack", breaks = seq(32,38,0.5)) +
+  geom_histogram(alpha = 0.5, position = "stack", breaks = seq(32,38,0.25)) +
   scale_x_continuous(limits = c(32, 38), expand = c(0, 0)) +
   theme_custom(); ed50hist
 
 drc_ed50_fig <- drcs + 
-  geom_histogram(data = fed50, inherit.aes = FALSE, alpha = 0.3,
+  geom_histogram(data = fed50, inherit.aes = FALSE, alpha = 0.5,
                  breaks = seq(32,38,0.25),
                  aes(x = estimate, y = ..count../12.5)) +
   scale_y_continuous(sec.axis = sec_axis(trans=~.*12.5, name = "Count of genet ED50s")) +
@@ -540,8 +547,9 @@ cbass <- fed50 %>%
 classic <- diffsres %>%
   select(genotype, estimate, std.error = SE)
 
-# Linear model / OLS
 both <- full_join(cbass, classic, by = "genotype", suffix = c(".ed50", ".dfvfm"))
+
+# Linear model / OLS
 mod <- lm(estimate.dfvfm ~ estimate.ed50, data = both)
 anova(mod)
 
@@ -564,11 +572,11 @@ comp <- ggplot(both, aes(x = estimate.ed50, y = estimate.dfvfm)) +
   geom_errorbar(aes(ymin = estimate.dfvfm - std.error.dfvfm, ymax = estimate.dfvfm + std.error.dfvfm),
                 lwd = 0.25) +
   #geom_label(aes(label = genotype)) +
-  stat_cor(method = "spearman", label.y = -0.08, label.x = 34.2, size = 2) + 
-  stat_cor(method = "pearson", label.y = -0.10, label.x = 34.2, size = 2) +
+  stat_cor(method = "spearman", label.y = -0.04, label.x = 34.3, size = 2) + 
+  stat_cor(method = "pearson", label.y = -0.06, label.x = 34.3, size = 2) +
   scale_x_continuous(breaks = seq(34, 37, 0.5), expand = c(0, 0)) +
   scale_y_continuous(expand = c(0, 0)) +
-  coord_cartesian(xlim = c(34, 37), ylim = c(-0.55, -0.03)) +
+  coord_cartesian(xlim = c(34, 37), ylim = c(-0.56, 0.01)) +
   theme_custom() +
   labs(x = "CBASS ED50 (°C)", y = "Classic ∆Fv/Fm (heated - control)"); comp
 
