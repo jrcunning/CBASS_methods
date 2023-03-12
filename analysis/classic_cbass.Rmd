@@ -81,8 +81,13 @@ cbasstemps <- map_dfr(cbasslogs, read_csv) %>%
   mutate(max_temp = factor(max(sp, na.rm = TRUE))) %>%
   ungroup()
 
-cbasstempsfig <- ggplot(cbasstemps, aes(x = dttm, y = temp, color = max_temp)) +
-  geom_line() +
+cbasstempsthin <- cbasstemps %>%
+  group_by(max_temp) %>%
+  slice(which(row_number() %% 3 == 1)) %>%
+  ungroup()
+
+cbasstempsfig <- ggplot(cbasstemps, aes(x = dttm, y = temp, group = max_temp)) +
+  geom_line(lwd = 0.5, alpha = 1) +
   theme_custom() +
   theme(legend.position = "none") +
   scale_y_continuous(limits = c(26.9, 38.2), breaks = seq(27, 38, 1)) +
@@ -177,12 +182,23 @@ temps <- temps %>%
   select(dttm, tank, temp, hamp) %>%
   complete(dttm, tank)
 
-# Plot classic temperatre profiles
-classictemps <- ggplot(temps, aes(x = dttm, y = hamp, color = tank)) +
-  geom_line(lwd = 0.5) +
+tempsthin <- temps %>%
+  group_by(tank) %>%
+  slice(which(row_number() %% 80 == 1)) %>%
+  ungroup() %>%
+  mutate(tank = factor(tank, levels = c("T2", "T3", "T1", "T4")))
+
+# Plot classic temperature profiles
+classictemps <- ggplot(tempsthin, aes(x = dttm, y = hamp, group = tank, lty = tank)) +
+  geom_line(lwd = 0.5, alpha = 1) +
   scale_x_datetime(breaks = "days", date_labels = "%m/%d") +
+  scale_linetype_discrete(name = "",
+                          labels = c("Heated Tank 1", "Heated Tank 2", 
+                                     "Control Tank 1", "Control Tank 2")) +
+  guides(linetype = guide_legend(ncol = 2)) +
   theme_custom() +
-  theme(legend.position = "none") +
+  theme(legend.position = c(0.33, 0.9),
+        legend.text = element_text(size = 6)) +
   scale_y_continuous(limits = c(26.9, 38.2), breaks = seq(27, 38, 1)) +
   labs(x = "Date", y = ""); classictemps
 
