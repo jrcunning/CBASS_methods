@@ -50,7 +50,7 @@ pammd <- readxl::read_xlsx("data/reproducibility/pam_order.xlsx") %>%
          date = as_date(date), n_corals = as.numeric(n_corals))
 
 # Import PAM data
-# List PAM files from 2021-09-06
+# List PAM files from 2021-09-06 and 2021-09-08
 pamfiles1 <- list.files(path = "data/reproducibility/PAM_data/20210906_1", pattern = "*.csv", full.names = T)
 pamfiles2 <- list.files(path = "data/reproducibility/PAM_data/20210908_1", pattern = "*.csv", full.names = T)
 pamfiles <- c(pamfiles2, pamfiles1)
@@ -85,6 +85,12 @@ pam <- full_join(pam1, pammd) %>%
 # Join PAM data with coral genet and temperature treatment information (which AOI corresponds to which coral)
 pam <- genetmd %>%
   full_join(pam, by = c("date", "rack", "position"))
+
+# how many fvfm meas per genet per temp?
+pam %>%
+  filter(var == "y_ii_") %>%
+  count(genet, temp) %>%
+  arrange(-n)
 ```
 
 # Fit dose-response curves to estimate ED50s
@@ -130,25 +136,6 @@ vals <- initmods %>%
 ```
 
 ```{r drc_diagnostics}
-
-# #### diagnostics
-# Extract hill parameter values from model fits
-# hill <- initmods %>%
-#   select(nursery, geno, pars) %>%
-#   unnest(pars) %>%
-#   filter(term == "hill")
-# ggplot(hill) +
-#   geom_histogram(aes(x = estimate))
-# hill %>% arrange(estimate)
-# 
-# maxes <- initmods %>%
-#   select(nursery, geno, pars) %>%
-#   unnest(pars) %>%
-#   filter(term == "max")
-# ggplot(maxes) +
-#   geom_histogram(aes(x = estimate))
-# maxes %>% arrange(-estimate)
-
 # # Identify problematic data points based on cook's distance and residuals
 counts <- vals %>%
   group_by(nursery, geno) %>%
@@ -195,77 +182,153 @@ fvals <- fmods %>%
 
 # Plot dose response curves for each genotype
 ```{r plot, fig.width = 10, fig.height = 10}
-# Define function to plot raw data, fitted values, and ed50 for each genotype
-plotfits <- function(data) {
-  ggplot(data = data, aes(x = max_temp)) + 
-    geom_point(pch = 4, size = 1.25,
-               aes(y = fvfmraw, color = factor(problem, levels = c("none", "no  signal",
-                                              "abnormally high",  
-                                              "abnormally high w/ low Ft",  
-                                              "high residual", "high cook's distance")))) + 
-    geom_point(aes(y = fvfm), pch = 1, size = 2) + 
-    geom_line(data = drop_na(data, .fitted), 
-              aes(y = .fitted)) + 
-    geom_vline(data = distinct(data, nursery, geno, ed50),
-               aes(xintercept = ed50), 
-               lwd = 0.2, lty = 2) +
-    geom_text(data = distinct(data, nursery, geno, ed50),
-              aes(x = ed50, y = 0.05, label = round(ed50, 2)), 
-              hjust = 1, nudge_x = -0.2, size = 3) +
-    facet_wrap(~ nursery + geno, drop = TRUE) +
-    scale_color_manual(name = "problem", drop = FALSE,
-                       values = c("black", "yellow", "red", "orange", "blue", "turquoise"))
-}
-
 # Plot fits
-plotfits(vals)
-#plotfits(data = fvals)
+## Reorder genotypes by ED50 in decreasing order
+fvals.ord <- fvals %>%
+  mutate(geno = fct_reorder(factor(geno), ed50, .fun = mean, na.rm = TRUE, .desc = TRUE))
+vals.ord <- vals %>%
+  mutate(geno = factor(geno, levels = levels(fvals.ord$geno)))
+ed50 <- ed50 %>% mutate(geno = factor(geno, levels = levels(fvals.ord$geno)))
+fed50 <- fed50 %>% mutate(geno = factor(geno, levels = levels(fvals.ord$geno)))
+
+ggplot(fvals.ord, aes(x = max_temp)) + 
+    facet_wrap(~ geno) +
+    geom_point(aes(y = fvfmraw, shape = is.na(fvfm)), size = 1) + 
+    geom_line(data = drop_na(fvals.ord), aes(y = .fitted), lty = 1) + 
+    geom_line(data = vals.ord, aes(y = .fitted), lty = 2) + 
+    geom_vline(data = ed50, aes(xintercept = estimate), lwd = 0.25, lty = 2) +
+    geom_vline(data = fed50, aes(xintercept = estimate), lwd = 0.25, lty = 1) +
+    scale_shape_manual(values = c(1, 4)) +
+    geom_text(data = fed50,
+              aes(x = estimate, y = 0.05, label = round(estimate, 2)), 
+              hjust = 1, nudge_x = -0.2, size = 2) +
+    theme_classic() +
+    theme(legend.position = "none")
 ```
 
 # Compare ED50s measured in 2021 to ED50s measured in 2020
 ```{r}
 # Import data from 2020
 ed50_2020 <- read_csv("~/Projects/CBASS_FL_Acer/data/processed/ed50_values.csv") %>%
-  mutate(nursery = case_when(nursery == "mote" ~ "mml", TRUE ~ nursery),
-         ed50_2020 = ed50, 
-         std.error_2020 = std.error) %>%
-  select(nursery, geno, ed50_2020, std.error_2020)
+  mutate(nursery = case_when(nursery == "mote" ~ "mml", TRUE ~ nursery)) %>%
+  select(nursery, geno, ed50_2020 = ed50, std.error_2020 = std.error)
 
 # In 2020, some genotypes were run multiple times from the same nursery, indicated by (A), (B), (C), etc.
 # Group these, and get the average ED50 for 2020 for each genotype from each nursery
 ed50_2020 <- ed50_2020 %>%
   separate(geno, into = c("geno", "replicate"), sep = "\\(") %>%
   group_by(geno, nursery) %>%
-  summarise(ed50_2020 = weighted.mean(ed50_2020, 1/std.error_2020^2), std.error_2020 = mean(std.error_2020))
+  summarise(ed50_2020 = weighted.mean(ed50_2020, 1/std.error_2020^2), 
+            std.error_2020 = mean(std.error_2020))
 
 # Tidy 2021 data and join with 2020
 ### Choose filtered or unfiltered 2021 data
-ed50_2021 <- ed50    # ed50 (unfiltered) or fed50 (filtered)
+ed50_2021 <- fed50    # ed50 (unfiltered) or fed50 (filtered)
 ed50_2021 <- ed50_2021 %>%
   mutate(ed50_2021 = estimate,
          std.error_2021 = std.error,
          nursery = tolower(nursery)) %>%
   select(nursery, geno, ed50_2021, std.error_2021)
-alldf <- left_join(ed50_2021, ed50_2020, by = c("nursery", "geno"))
+alldf <- left_join(ed50_2021, ed50_2020, by = c("nursery", "geno")) %>%
+  drop_na()
 
-# Plot raw ED50 values from 2021 vs. 2020
-plot1 <- ggplot(alldf, aes(x = ed50_2020, y = ed50_2021)) +
-  geom_point(aes(color = nursery, shape = nursery)) +
-  geom_errorbar(aes(xmin = ed50_2020 - std.error_2020, xmax = ed50_2020 + std.error_2020), lwd = 0.1) +
-  geom_errorbar(aes(ymin = ed50_2021 - std.error_2021, ymax = ed50_2021 + std.error_2021), lwd = 0.1) +
-  geom_text(aes(label = geno), size = 5) +
-  geom_smooth(aes(color = nursery, shape = nursery), method = "lm", se = FALSE) +
-  labs(x = "ED50 - 2020", y = "ED50 - 2021") +
-  coord_fixed(ratio = 1, xlim = c(34.5, 37.0), ylim = c(34.5, 37.0)) +
-  ggpubr::stat_cor(method = "pearson", label.y = 36.8, label.x = 34.5, size = 3)
-  #ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.5, size = 3)
-plot1
-
-# Linear model for raw/unadjusted ED50 values
-mod <- lm(ed50_2021 ~ ed50_2020 + nursery, data = alldf)
-anova(mod)
+# # Plot raw ED50 values from 2021 vs. 2020
+# plot1 <- ggplot(alldf, aes(x = ed50_2020, y = ed50_2021)) +
+#   geom_point(aes(color = nursery, shape = nursery)) +
+#   geom_errorbar(aes(xmin = ed50_2020 - std.error_2020, xmax = ed50_2020 + std.error_2020), lwd = 0.1) +
+#   geom_errorbar(aes(ymin = ed50_2021 - std.error_2021, ymax = ed50_2021 + std.error_2021), lwd = 0.1) +
+#   geom_text(aes(label = geno), size = 5) +
+#   geom_smooth(aes(color = nursery, shape = nursery), method = "lm", se = FALSE) +
+#   labs(x = "ED50 - 2020", y = "ED50 - 2021") +
+#   coord_fixed(ratio = 1, xlim = c(34.5, 37.0), ylim = c(34.5, 37.0)) +
+#   ggpubr::stat_cor(method = "pearson", label.y = 36.8, label.x = 34.5, size = 3)
+#   #ggpubr::stat_cor(method = "spearman", label.y = 36.8, label.x = 34.5, size = 3)
+# plot1
+# 
+# # Linear model for raw/unadjusted ED50 values
+# mod <- lm(ed50_2021 ~ ed50_2020 + nursery, data = alldf)
+# anova(mod)
 ```
 
+# New analysis 2023
+```{r}
+# Combine data and convert to long format
+alldf <- alldf %>%
+  mutate(sum.std.error = std.error_2020 + std.error_2021)
+
+longdf <- alldf %>%
+  pivot_longer(cols = c(ed50_2021, ed50_2020, std.error_2020, std.error_2021), 
+               names_to = "year", values_to = "value") %>%
+  separate(year, into = c("var", "year"), sep = "_") %>%
+  pivot_wider(names_from = var, values_from = value)
+
+
+# Filter top genotypes based on quality of ED50 fitting
+hist(alldf$sumse)
+ggplot(alldf, aes(x = std.error_2020, y = std.error_2021)) + geom_point()
+quantile(alldf$std.error_2020, 0.9)
+quantile(alldf$std.error_2021, 0.9)
+quantile(alldf$sum.std.error, 0.8)
+top <- alldf %>%
+  #arrange(sum.std.error) %>%
+  #slice(1:50)
+  #filter(std.error_2020 < 0.29 & std.error_2021 < 0.457); top
+  filter(sum.std.error < 0.5858); top
+
+#filtered2021 with sumse cutoff 0.677 (n=58) >> 0.303, 0.655
+#filtered2021 with sumse cutoff 0.639 (top85%; n=56) >> 0.284, 0.642
+#filtered2021 with sumse cutoff 0.586 (top80%; n = 52) >> 0.285, 0.619
+
+toplongdf <- longdf %>%
+  filter(geno %in% top$geno)
+
+# Model nursery and year effects to remove from data
+indf <- toplongdf
+mod <- lm(ed50 ~ nursery:year, data = indf)
+# Calculate grand mean ED50
+gm <- mean(indf$ed50)
+# Add residuals from nursery*year fitted values to the grand mean ED50
+out <- augment(mod, indf) %>%
+  mutate(ed50_adj = gm + .resid) %>%
+  select(geno, nursery, year, ed50, ed50_adj) %>%
+  pivot_wider(names_from = year, values_from = c(ed50, ed50_adj))
+
+# Get ECDF for plotting
+res2 <- out %>%
+  mutate(diff = abs(ed50_adj_2021 - ed50_adj_2020))
+dens <- density(res2$diff, adjust = 0.1)
+dens <- tibble(x = dens$x, y = dens$y) %>%
+  mutate(cd = cumsum(y)/sum(y))
+# Get degree diffs for x% of cases from cumulative density
+conf0.5 <- dens$x[which.min(abs(0.5 - dens$cd))]
+conf0.9 <- dens$x[which.min(abs(0.9 - dens$cd))]
+
+# Plot adjusted ED50s 2021 vs. 2020
+left_join(out, alldf) %>%
+ggplot(aes(x = ed50_adj_2020, y = ed50_adj_2021)) +
+  geom_point(aes(color = sum.std.error)) +
+  geom_ribbon(aes(ymin = ..x.. - conf0.5, ymax = ..x.. + conf0.5), alpha = 0.25) +
+  geom_ribbon(aes(ymin = ..x.. - conf0.9, ymax = ..x.. + conf0.9), alpha = 0.25) +
+  annotate("text", x = 35, y = 37, label = round(conf0.9, 3)) +
+  annotate("text", x = 35, y = 36.8, label = round(conf0.5, 3)) +
+  labs(x = "ED50 (°C) in Test 1 (2020)", y = "ED50 (°C) in Test 2 (2021)") +
+  geom_abline(aes(slope = 1, intercept = 0), lty = 2, lwd = 0.25) +
+  theme_custom() +
+  #theme(legend.position = "none") +
+  coord_fixed(expand = c(0.1,0.1))
+
+
+
+
+
+```
+
+
+
+
+
+####------
+# everything below is older code from arond reef futures conference...
 # Filter out ED50 measurements with high error (lower confidence in value)
 ```{r}
 # Filter just ED50s with lower standard errors
@@ -289,6 +352,49 @@ mod <- lm(ed50_2021 ~ ed50_2020 + nursery, data = highconf)
 anova(mod)
 ```
 
+# Plot raw/unadjusted
+```{r}
+# Plot raw/unadjusted ED50s from 2021 to 2020
+
+means <- highconf %>%
+  pivot_longer(cols = c(ed50_2021, ed50_2020), names_to = "year") %>%
+  group_by(nursery, year) %>%
+  summarise(meanval = mean(value),
+            sd = sd(value)) %>%
+  pivot_wider(names_from = year, values_from = c(meanval, sd)) %>%
+  select(nursery, ed50_2020 = meanval_ed50_2020, ed50_2021 = meanval_ed50_2021,
+         sd_2020 = sd_ed50_2020, sd_2021 = sd_ed50_2021) %>%
+  ungroup()
+means
+
+
+p1 <- highconf %>%
+  ggplot(aes(x = ed50_2020, y = ed50_2021, color = nursery, fill = nursery)) +
+  geom_point(size = 1, pch = 16, stroke = 0.25) +
+  geom_abline(aes(slope = 1, intercept = 0), lty = 2, lwd = 0.25) +
+  labs(x = "ED50 (°C) in Test 1 (2020)", y = "ED50 (°C) in Test 2 (2021)") +
+  theme_custom() +
+  theme(legend.position = "none") #+
+  #coord_fixed(expand = FALSE)
+ggsave(p1, filename = "output/p1.png", height = 75, width = 50, units = "mm")
+
+p2 <- p1 +
+  geom_point(data = means, size = 4, pch = 16) +
+  geom_errorbar(data = means, aes(xmin = ed50_2020 - sd_2020, xmax = ed50_2020 + sd_2020), width = 0) +
+  geom_errorbar(data = means, aes(ymin = ed50_2021 - sd_2021, ymax = ed50_2021 + sd_2021), width = 0)
+ggsave(p2, filename = "output/p2.png", height = 75, width = 50, units = "mm")
+
+int <- highconf %>%
+  mutate(pred = ed50_2020 - 1 * ed50_2021) %>%
+  group_by(nursery) %>%
+  summarise(int = mean(pred))
+
+p3 <- p2 +
+  #geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
+  geom_abline(aes(intercept = -int, slope = 1, color = nursery), data = int)
+ggsave(p3, filename = "output/p3.png", height = 75, width = 50, units = "mm")
+```
+
 # Get adjusted ED50 values, removing nursery and year effects
 ```{r}
 # Pivot to long form to model nursery:year differences and then subtract residuals
@@ -301,9 +407,10 @@ res <- augment(mod, long) %>%
   mutate(ed50_adj = mean(long$ed50) + .resid)
 
 # Confirm that all nursery:year groups now have same mean value
-# res %>%
-#   group_by(nursery, year) %>%
-#   summarise(meanvaladj = mean(ed50_adj))
+means <- res %>%
+  group_by(nursery, year) %>%
+  summarise(meanvaladj = mean(ed50),
+            sd = sd(ed50))
 
 # Pivot to wide form to model 2021 vs. 2020
 res2 <- res %>%
@@ -313,6 +420,26 @@ res2 <- res %>%
 
 # Compare ED50s from 2021 to 2020
 ```{r}
+p4 <- res2 %>%
+  ggplot(aes(x = ed50_2020, y = ed50_2021)) +
+  geom_point(size = 1, pch = 1, stroke = 0.25) +
+    geom_ribbon(aes(x = seq(34.8, 36.4, length.out = 50), 
+                  ymin = ..x.. - filter(myvals, perc == 0.5) %>% pull(diff), 
+                  ymax = ..x.. + filter(myvals, perc == 0.5) %>% pull(diff)), alpha = 0) +
+  geom_ribbon(aes(x = seq(34.8, 36.4, length.out = 50),
+                  ymin = ..x.. - filter(myvals, perc == 0.9) %>% pull(diff), 
+                  ymax = ..x.. + filter(myvals, perc == 0.9) %>% pull(diff)), alpha = 0) +
+  labs(x = "ED50 (°C) in Test 1 (2020)", y = "ED50 (°C) in Test 2 (2021)") +
+  geom_abline(aes(slope = 1, intercept = 0), lty = 2, lwd = 0.25) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  coord_fixed(expand = FALSE)
+ggsave(p4, filename = "output/p4.png", height = 75, width = 50, units = "mm")
+
+p5 <- p4 + geom_segment(aes(y = ed50_2020, yend = ed50_2021, x = ed50_2020, xend = ed50_2020),
+                  lwd = 0.2, color = "red")
+ggsave(p5, filename = "output/p5.png", height = 75, width = 50, units = "mm")
+
 # Model adjusted ED50ʻs from 2021 vs. 2020
 ## Linear model
 mod.lm <- lm(ed50_2021 ~ ed50_2020, data = res2)
@@ -354,6 +481,7 @@ panelA <- res2 %>%
   theme_custom() +
   theme(legend.position = "none") +
   coord_fixed(expand = FALSE); panelA
+ggsave(panelA, filename = "output/panelA.png", height = 75, width = 50, units = "mm")
 
 # Visualize ECDF
 panelB <- ggplot(res2, aes(x = diff)) +
@@ -365,6 +493,7 @@ panelB <- ggplot(res2, aes(x = diff)) +
   scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 0.9, 1), labels = scales::percent, expand = c(0, 0)) +
   labs(x = "|Test 1 - Test 2| ΔED50 (°C)", y = "Percent of cases") +
   theme_custom(); panelB 
+ggsave(panelB, filename = "output/panelB.png", height = 75, width = 50, units = "mm")
 
 # Visualize histogram of diffs
 panelC <- res2 %>%
@@ -378,6 +507,7 @@ panelC <- res2 %>%
 
 col2 <- cowplot::plot_grid(panelB, panelC, ncol = 1, labels = c("B", "C"))
 #cowplot::plot_grid(panelA, col2, ncol = 2, labels = c("A", ""))
+panelB
 
 fig1 <- cowplot::plot_grid(panelA, panelB, ncol = 2, labels = "AUTO")
 fig1
@@ -426,18 +556,22 @@ mod <- glm(higher21 ~ diff.20, data = diffs2, family = "binomial")
 anova(mod)
 
 # Get probability that rank order is same given difference in 2020 ED50s
-emm <- emmeans::emmeans(mod, specs = "diff.20", at = list(diff.20 = seq(0,1.5,0.01)), type = "response")
+emm <- emmeans::emmeans(mod, specs = "diff.20", at = list(diff.20 = seq(0,2.0,0.01)), type = "response")
 
 fig2 <- ggplot(data.frame(emm), aes(x = diff.20, y = prob)) +
   geom_line() +
   geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL), alpha = 0.2) +
-  labs(x = "Pairwise difference in ED50 (°C) in Test 1 (2020)",
-       y = "Probability of same rank order in Test 2 (2021)") +
-  scale_x_continuous(expand = c(0, 0)) +
+  labs(x = "Pairwise difference in ED50 (°C)\nin Test 1 (2020)",
+       y = "Probability of same rank order\nin Test 2 (2021)") +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 2)) +
   theme_custom() +
+  theme(text = element_text(size = 14)) +
   coord_cartesian(ylim = c(0.5, 1), expand = c(0, 0)); fig2
 
 ggsave(fig2, filename = "output/fig2.png", width = 89, height = 89, units = "mm")
+
+ggsave(fig2, filename = "output/f1.png", width = 50, height = 50, units = "mm")
+
 ```
 
 
