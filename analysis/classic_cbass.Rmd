@@ -205,7 +205,7 @@ classictemps <- ggplot(tempsthin, aes(x = dttm, y = hamp, group = tank, lty = ta
 ggsave(classictemps, filename = "output/classic_temps.png", width = 100, height = 80, units = "mm")
 ```
 
-### Combined profiles figure
+### Combined temperature profiles figure
 ```{r}
 library(cowplot)
 profiles <- plot_grid(cbasstempsfig, classictemps, nrow = 1, rel_widths = c(0.5, 0.5), labels = "auto")
@@ -215,7 +215,7 @@ ggsave(profiles, filename = "output/cbass_classic_profiles.png", width = 183, he
 
 # -------------
 
-# CBASS experiment
+# CBASS results
 
 ### Import rack, temperature, and coral position information
 ```{r}
@@ -391,46 +391,49 @@ ed50 <- ed50 %>%
 vals <- vals %>%
   mutate(geno = fct_reorder(factor(tag_no), ed50, .fun = mean))
 fvals <- fvals %>%
-  mutate(geno = fct_reorder(factor(geno), ed50, .fun = mean))
+  mutate(geno = fct_reorder(factor(geno), ed50, .fun = mean, na.rm = TRUE))
 
-ggplot(fvals, aes(x = max_temp, y = fvfmraw)) +
+alldrc <- ggplot(fvals, aes(x = max_temp, y = fvfmraw)) +
   facet_wrap(~geno) +
   geom_point(aes(shape = problem)) +
   geom_line(aes(y = .fitted), data = drop_na(fvals)) +
   geom_line(aes(y = .fitted), data = vals, lty = 2) +
-  geom_vline(aes(xintercept = estimate), data = fed50, lty = 1, lwd = 0.25) +
-  geom_vline(aes(xintercept = estimate), data = ed50, lty = 2, lwd = 0.25) +
+  geom_vline(aes(xintercept = estimate), data = fed50, lty = 1, lwd = 0.1) +
+  geom_vline(aes(xintercept = estimate), data = ed50, lty = 2, lwd = 0.1) +
   geom_text(aes(x = estimate, y = 0.05, label = round(estimate, 2)), data = fed50,
             size = 2, nudge_x = -1.5) +
-  scale_shape_manual(values = c(4, 2, 1))
+  scale_shape_manual(values = c(4, 1)) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "Temperature (°C)", y = "Fv/Fm"); alldrc
+
+ggsave(alldrc, filename = "output/alldrc.png", width = 183, height = 183, units = "mm")
 
 
 
-# Get finer scale fitted values
+# Get finer scale fitted values for plotting
 test <- fmods %>%
-  mutate(pred = map(ll3, ~augment(.x, newdata = data.frame(max_temp = seq(28.5, 40, 0.05)))))
-
-test2 <- test %>% 
+  mutate(pred = map(ll3, ~augment(.x, newdata = data.frame(max_temp = seq(28.5, 40, 0.05))))) %>%
   select(geno, pred) %>%
   unnest(pred) %>%
   mutate(geno = factor(geno))
 
-drcs <- ggplot(test2, aes(x = max_temp, y = .fitted, group = geno)) +
+drcs <- ggplot(test, aes(x = max_temp, y = .fitted, group = geno)) +
   geom_line(alpha = 0.7, lwd = 0.25) +
   scale_x_continuous(limits = c(32, 38), expand = c(0, 0)) +
   theme_custom() +
   theme(legend.position = "none"); drcs
 
 ed50hist <- ggplot(fed50, aes(x = estimate)) +
-  geom_histogram(alpha = 0.5, position = "stack", breaks = seq(32,38,0.25)) +
+  geom_histogram(alpha = 0.5, position = "stack", breaks = seq(32,38,0.5)) +
   scale_x_continuous(limits = c(32, 38), expand = c(0, 0)) +
   theme_custom(); ed50hist
 
 drc_ed50_fig <- drcs + 
   geom_histogram(data = fed50, inherit.aes = FALSE, alpha = 0.5,
-                 breaks = seq(32,38,0.25),
-                 aes(x = estimate, y = ..count../12.5)) +
-  scale_y_continuous(sec.axis = sec_axis(trans=~.*12.5, name = "Count of genet ED50s")) +
+                 breaks = seq(32,38,0.5),
+                 aes(x = estimate, y = ..count../15)) +
+  scale_y_continuous(sec.axis = sec_axis(trans=~.*15, name = "Count of genet ED50s")) +
   labs(x = "Temperature (°C)", y = "Fv/Fm"); drc_ed50_fig
 
 ggsave(drc_ed50_fig, filename = "output/drc_ed50.png", width = 80, height = 60, units = "mm")
@@ -588,8 +591,10 @@ comp <- ggplot(both, aes(x = estimate.ed50, y = estimate.dfvfm)) +
   geom_errorbar(aes(ymin = estimate.dfvfm - std.error.dfvfm, ymax = estimate.dfvfm + std.error.dfvfm),
                 lwd = 0.25) +
   #geom_label(aes(label = genotype)) +
-  stat_cor(method = "spearman", label.y = -0.04, label.x = 34.3, size = 2) + 
-  stat_cor(method = "pearson", label.y = -0.06, label.x = 34.3, size = 2) +
+  annotate("text", x = 34.5, y = -0.038, label = "Spearman: ", size = 2, adj = 1) +
+  annotate("text", x = 34.5, y = -0.058, label = "Pearson: ", size = 2, adj = 1) +
+  stat_cor(method = "spearman", label.y = -0.04, label.x = 34.5, size = 2) + 
+  stat_cor(method = "pearson", label.y = -0.06, label.x = 34.5, size = 2) +
   scale_x_continuous(breaks = seq(34, 37, 0.5), expand = c(0, 0)) +
   scale_y_continuous(expand = c(0, 0)) +
   coord_cartesian(xlim = c(34, 37), ylim = c(-0.56, 0.01)) +
