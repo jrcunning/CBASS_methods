@@ -353,56 +353,203 @@ ggplot(data.frame(emm), aes(x = diff202010, y = prob)) +
 
 # How confident can we be in identifying GROUPS of more/less tolerant corals?
 ```{r}
-top <- filter(out, date == "202010") %>%
-  filter(ed50_adj > quantile(ed50_adj, 0.5))
-bottom <- filter(out, date == "202010") %>%
-  filter(ed50_adj < quantile(ed50_adj, 0.5))
-
-top2 <- filter(out, date == "202109", geno %in% top$geno)
-bottom2 <- filter(out, date == "202109", geno %in% bottom$geno)
-
-test <- bind_rows(top = top2, bottom = bottom2, .id = "cat")
-test
-mod <- lm(ed50_adj ~ cat, data = test)
-anova(mod)
-
-g1 <- out %>% filter(date == "202010") %>% sample_n(10)
-g2 <- out %>% filter(date == "202010") %>% sample_n(10)
-diff <- mean(g1$ed50_adj) - mean(g2$ed50_adj)
-
 ####
 # GET 2 RANDOM GROUPS OF N CORALS. calc mean diff btw groups in 202010, 202109 (and 202006).
 # Look at value of mean difference in 202109 (and 202006) vs. 202010, and get pred. interval.
-### toooo many groups! need to get a subset upfront....
-set.seed(4)
-# Pick subset of genos from equal bins across range of ed50_adj distribution from oct2020
-oct2010 <- out %>% 
-  filter(date == "202010") 
+
+# Get subset of genos spanning equal bins across range of cot2020ed50_adj distribution
+oct2010 <- out %>% filter(date == "202010") 
 bins <- oct2010 %>%
-  mutate(bin = cut(ed50_adj, breaks = seq(min(ed50_adj), max(ed50_adj), length.out = 10),
-         include.lowest = TRUE))
+  mutate(bin = cut(ed50_adj, breaks = seq(min(ed50_adj), max(ed50_adj), length.out = 10), 
+                   include.lowest = TRUE))
 bins %>% count(bin)
+set.seed(4)
 subset <- bins %>% 
   group_by(bin) %>%
-  slice_sample(n = 3)
-indf <- out %>%
-  filter(geno %in% subset$geno) %>%
+  slice_sample(n = 8)  # 4 genos per bin = 36 genos for simulations, including all top and bottom genos
+
+# Format input dataframes
+indf.unadj <- out %>%
+  filter(geno %in% subset$geno) %>%   # use subset only?
+  pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) %>%
+  select(geno, `202010` = ed50_202010, `202006` = ed50_202006, `202109` = ed50_202109) %>% 
+  pivot_longer(c(`202006`, `202109`)) %>% drop_na()
+indf.adj <- out %>%
+  filter(geno %in% subset$geno) %>%   # use subset only?
   pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) %>%
   select(geno, `202010` = ed50_adj_202010, `202006` = ed50_adj_202006, `202109` = ed50_adj_202109) %>%
   pivot_longer(c(`202006`, `202109`)) %>% drop_na()
+
+# Function to compare 2 random groups of specified size
 ran <- function(df, groupsize) {
-  g <- indf %>% group_by(geno) %>% slice_sample(n=1) %>% ungroup() %>%
+  g <- df %>% group_by(geno) %>% slice_sample(n=1) %>% ungroup() %>%
     slice_sample(n = 2 * groupsize)
   g <- g %>% mutate(group = c(rep(1, groupsize), rep(2, groupsize)))
-  r <- g %>% group_by(group) %>% 
+  r <- suppressMessages(g %>% group_by(group) %>% 
     summarize(mean.1 = mean(`202010`), mean.2 = mean(value)) %>%
-    summarize_all(diff)
+    summarize_all(diff) %>%
+    mutate(absdiff.1 = abs(mean.1), meandiff.2 = mean.2 * sign(mean.1)))
   return(r)
 }
 
-ran(indf, 3)
 
-res <- replicate(1000, ran(indf, 6), simplify = FALSE)
+# Run function many times to compare different random groups
+# Function to run simulation many tips
+reprun <- function(df, nsim, groupsize) replicate(nsim, ran(df, groupsize), simplify = FALSE)
+options(dplyr.summarise.inform = FALSE)
+reprun(indf.unadj, 100, groupsize = 20)
+library(furrr)
+plan(multiprocess)
+# Run simulations on unadjusted ED50 data
+runres.unadj <- tibble(groupsize = c(1,3,10,20)) %>%
+  mutate(runout = future_map(groupsize, ~reprun(indf.unadj, 5000, groupsize = .x)),
+         runout = map(runout, ~map_dfr(.x, bind_rows)))
+# Fit model for re-test (mean) difference between groups as a function of initial test difference
+runres.unadj <- runres.unadj %>%
+  mutate(mod = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
+         pred= map(mod, ~ data.frame(predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
+                                 interval = "predict", level = 0.9))),
+         pred= map(pred, ~.x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
+         
+allout.unadj <- runres.unadj %>% 
+  select(groupsize, runout) %>%
+  unnest(runout)
+
+allpred.unadj <- runres.unadj %>%
+  select(groupsize, pred) %>%
+  unnest(pred)
+
+
+# Run simulations on ADjusted ED50 data
+runres.adj <- tibble(groupsize = c(1,3,10,20)) %>%
+  mutate(runout = future_map(groupsize, ~reprun(indf.adj, 5000, groupsize = .x)),
+         runout = map(runout, ~map_dfr(.x, bind_rows)))
+# Fit model for re-test (mean) difference between groups as a function of initial test difference
+runres.adj <- runres.adj %>%
+  mutate(mod = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
+         pred= map(mod, ~ data.frame(predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
+                                 interval = "predict", level = 0.9))),
+         pred= map(pred, ~.x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
+         
+allout.adj <- runres.adj %>% 
+  select(groupsize, runout) %>%
+  unnest(runout)
+
+allpred.adj <- runres.adj %>%
+  select(groupsize, pred) %>%
+  unnest(pred)
+
+
+
+# ggplot(allout.adj, aes(x = absdiff.1, y = meandiff.2)) +
+#   facet_wrap(~groupsize) +
+#   geom_point(alpha = 0.5, color = "gray") +
+#   geom_ribbon(aes(y = fit, ymin = lwr, ymax = upr), data = allpred.adj, alpha = 0.2, fill = "blue") +
+#   geom_hline(aes(yintercept = 0), lty = 1, lwd = 0.25) +
+#   coord_cartesian(ylim = c(-1.5, 1.5), xlim = c(0, 1.5)) +
+#   theme_custom()
+
+thresh.unadj <- allpred.unadj %>%
+  group_by(groupsize) %>%
+  filter(lwr > 0) %>%
+  summarize(thresh = min(absdiff.1))
+
+thresh.adj <- allpred.adj %>%
+  group_by(groupsize) %>%
+  filter(lwr > 0) %>%
+  summarize(thresh = min(absdiff.1))
+
+ggplot(data = thresh.unadj, aes(x = groupsize, y = thresh)) +
+  geom_point(color = "gray") +
+  geom_line(color = "gray") +
+  geom_point(data = thresh.adj, color = "black") +
+  geom_line(data = thresh.adj, color = "black") +
+  scale_y_continuous(limits = c(0, 2), expand = c(0, 0)) +
+  scale_x_continuous(limits = c(0, 20)) +
+  theme_custom()
+  
+
+### this is pretty cool ^^^^.... 
+# maybe also compare to unadjusted ed50s
+### YES ^^^ do these simulations with adjusted and unadjusted ED50s!!!
+
+# spot check
+outwide <- out %>%
+  filter(geno %in% subset$geno) %>%
+  pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) 
+top10 <- outwide %>%
+  arrange(ed50_202010) %>%
+  tail(10) %>% drop_na(ed50_202109)
+bottom10 <- outwide %>%
+  arrange(ed50_202010) %>%
+  head(10) %>% drop_na(ed50_202109)
+mean(bottom10$ed50_adj_202010)
+mean(top10$ed50_adj_202010)
+36.12825 - 35.2719
+mean(bottom10$ed50_adj_202109)
+mean(top10$ed50_adj_202109)
+35.9325 - 35.30401
+
+
+
+
+
+
+
+
+
+###############
+# but what about looking at a *minimum* difference between groups instead of *mean difference*?
+ranmin <- function(df, groupsize) {
+  g <- indf %>% group_by(geno) %>% slice_sample(n=1) %>% ungroup() %>%
+    slice_sample(n = 2 * groupsize)
+  g <- g %>% mutate(group = c(rep(1, groupsize), rep(2, groupsize)))
+  diffs <- outer(g$`202010`[1:groupsize], g$`202010`[(groupsize+1):(2*groupsize)], "-")
+  # if group 1 are all higher, then all diffs are >0
+  if (all(diffs > 0.25)) {
+    mindiff.1 <- min(diffs)
+    r <- g %>% group_by(group) %>%
+      summarize(mean.2 = mean(value)) %>%
+      summarize(across(2, diff))
+    return(c(mindiff.1 = mindiff.1, meandiff.2 = -1 * r$mean.2))
+  }
+  if (all(diffs < -0.25)) {
+    mindiff.1 <- min(abs(diffs))
+    r <- g %>% group_by(group) %>%
+      summarize(mean.2 = mean(value)) %>%
+      summarize(across(2, diff))
+    return(c(mindiff.1 = mindiff.1, meandiff.2 = r$mean.2))
+  }
+}
+ranmin(indf, 3)
+
+res <- replicate(10000, ranmin(indf, 3), simplify = FALSE)
+res2 <- map_dfr(res, bind_rows)
+# res2 <- res2 %>% 
+#   mutate(absdiff.1 = abs(mindiff.1), meandiff.2 = meandiff.2 * sign(mindiff.1))
+mod <- lm(meandiff.2 ~ mindiff.1, data = res2)
+newdat <- data.frame(mindiff.1 = seq(0, 1.5, 0.1))
+pred <- data.frame(predict(mod, newdata = newdat, interval = "predict", level = 0.9)) %>% bind_cols(newdat)
+ggplot(res2, aes(x = mindiff.1, y = meandiff.2)) + 
+  geom_point(alpha = 0.2) +  
+  geom_ribbon(aes(y = fit, ymin = lwr, ymax = upr), data = pred, alpha = 0.2) +
+  coord_cartesian(ylim = c(-1.5, 1.5), xlim = c(0, 1.5))
+
+
+# or *percentile* difference?
+indf <- indf %>% mutate(`202010perc` = percent_rank(`202010`))
+ranperc <- function(df, groupsize, ptile) {
+  indf %>% group_by(geno) %>% slice_sample(n=1) %>% ungroup() %>%
+    mutate(group = case_when(`202010perc` < ptile ~ "bottom",
+                             `202010perc` > (1 - ptile) ~ "top")) %>%
+    drop_na(group) %>%
+    group_by(group) %>%
+    slice_sample(n = groupsize) %>%
+    summarize(mean.1 = mean(`202010`), mean.2 = mean(value)) %>%
+    summarize(across(2:3, diff))
+}
+
+res <- replicate(100, ranperc(indf, 3, 0.3), simplify = FALSE)
 res2 <- map_dfr(res, bind_rows)
 res2 <- res2 %>% 
   mutate(absdiff1 = abs(mean.1), diff2 = mean.2 * sign(mean.1))
@@ -413,36 +560,6 @@ ggplot(res2, aes(x = absdiff1, y = diff2)) +
   geom_point(alpha = 0.2) +  
   geom_ribbon(aes(y = fit, ymin = lwr, ymax = upr), data = pred, alpha = 0.2) +
   coord_cartesian(ylim = c(-1.5, 1.5), xlim = c(0, 1.5))
-  
-
-n <- 3
-df <- out %>% 
-  pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) %>%
-  summarize(group = combn(geno, n, paste, simplify = FALSE),
-            mean_202006 = combn(ed50_adj_202006, n, mean),
-            mean_202010 = combn(ed50_adj_202010, n, mean),
-            mean_202109 = combn(ed50_adj_202109, n, mean))
-df <- df %>% filter(!(is.na(mean_202006) & is.na(mean_202109)))
-dff <- df %>% sample_n(1000)
-dff1 <- rename_with(dff, ~ paste0(.x, ".1"))
-dff2 <- rename_with(dff, ~ paste0(.x, ".2"))
-comp2 <- crossing(dff1, dff2) %>%    # this has a - b and b - a, so filtering > 0.5 (instead of abs) still has all comparisons
-  dplyr::filter(mean_202010.1 > mean_202010.2) %>%
-  summarize(diff202010 = mean_202010.1 - mean_202010.2,
-            diff202006 = mean_202006.1 - mean_202006.2,
-            diff202109 = mean_202109.1 - mean_202109.2) %>%
-  pivot_longer(c(diff202006, diff202109)) %>%
-  drop_na()
-
-mod <- lm(value ~ diff202010, data = comp2)
-newdat <- data.frame(diff202010 = seq(0, 1.5, 0.1))
-pred <- data.frame(predict(mod, newdata = newdat, interval = "predict", level = 0.9)) %>% bind_cols(newdat)
-ggplot(comp2, aes(x = diff202010, y = value)) + 
-  #geom_point(alpha = 0.2) +
-  geom_ribbon(aes(y = fit, ymin = lwr, ymax = upr), data = pred, alpha = 0.2) +
-  coord_cartesian(ylim = c(-1.5, 1.5), xlim = c(0, 1.5))
-
-
 ```
 
 
