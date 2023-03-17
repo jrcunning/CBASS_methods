@@ -85,15 +85,15 @@ longdf <- bind_rows(ed50_202006, ed50_202010, ed50_202109) %>%
 
 ## Prefilter data based on ED50 std.error
 ```{r}
-# Identify lower quality data as highest 10% standard error of ED50 parameter estimates
-outliers <- longdf %>%
-  group_by(nursery, geno) %>%
-  summarize(meanse = mean(std.error)) %>%
-  ungroup() %>%
-  filter(meanse > quantile(meanse, 0.9))
-
-# Remove genotypes with highest 10% standard error of ED50 parameter estimates
-toplongdf <- longdf #%>% filter(!geno %in% outliers$geno)
+# # Identify lower quality data as highest 10% standard error of ED50 parameter estimates
+# outliers <- longdf %>%
+#   group_by(nursery, geno) %>%
+#   summarize(meanse = mean(std.error)) %>%
+#   ungroup() %>%
+#   filter(meanse > quantile(meanse, 0.9))
+# 
+# # Remove genotypes with highest 10% standard error of ED50 parameter estimates
+# toplongdf <- longdf #%>% filter(!geno %in% outliers$geno)
 ```
 
 # Plot and analyze unadjusted data
@@ -105,23 +105,39 @@ ress <- augment(mod, toplongdf) %>% arrange(-.cooksd)
 hist(ress$.cooksd, breaks = 50)
 highcooks <- ress %>% filter(.cooksd > 0.05)
 
+
 # Remove genotypes with highest cooksD
 toplongdf <- toplongdf %>% filter(!geno %in% highcooks$geno)
+# Refit model
+mod.refit <- lm(ed50 ~ nursery:date + geno, data = toplongdf)
+modres <- tidy(anova(mod.refit))
+# Variance explained by genotype X environment
+modres %>%
+  mutate(varexpl = sumsq / sum(sumsq))
+
+
 
 topwidedf <- toplongdf %>%
   pivot_wider(names_from = date, values_from = c(ed50, std.error))
 
-
-
 mod2 <- lm(ed50_202109 ~ ed50_202010 + nursery, data = topwidedf)
 anova(mod2)
 
+
+# Scatter plots of test-retest ED50s (unadjusted)
+means <- topwidedf %>% group_by(nursery) %>%
+  summarize(across(starts_with("ed50"), mean, na.rm = TRUE))
 unadj.corr <- ggplot(topwidedf, aes(x = ed50_202010)) +
   facet_wrap(~ nursery) +
-  #geom_point(data = means, aes(y = ed50_202109), pch = 1, size = 3, color = "red", alpha = 0.5) + 
+  geom_point(data = means, aes(y = ed50_202109), pch = 16, size = 3, fill = "gray", alpha = 0.3) + 
+  geom_point(data = means, aes(y = ed50_202006), pch = 17, size = 3, fill = "gray", alpha = 0.3) + 
+  geom_abline(slope = 1, intercept = 0, lty = 1, lwd = 0.25) +
+  geom_abline(data = means, aes(slope = 1, intercept = ed50_202109 - ed50_202010), 
+              color = "gray", lty = 3) +
+    geom_abline(data = means, aes(slope = 1, intercept = ed50_202006 - ed50_202010), 
+              color = "gray", lty = 2) +
   geom_point(aes(y = ed50_202109), pch = 1) +
   geom_point(aes(y = ed50_202006), pch = 2) +
-  geom_abline(slope = 1, intercept = 0, lty = 2) +
   #geom_label(aes(y = ed50_202109, label = geno)) +
   #stat_cor() +
   coord_fixed(xlim = range(toplongdf$ed50), ylim = range(toplongdf$ed50)) +
@@ -219,6 +235,7 @@ ecdf2 <- myecdf +
 ```
 
 ```{r}
+library(cowplot)
 # Plot combined figure
 repro.fig <- plot_grid(unadj.corr, adj.corr, ecdf2, nrow = 1, 
                        labels = "auto", rel_widths = c(0.42, 0.29, 0.29))
