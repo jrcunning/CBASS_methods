@@ -248,108 +248,6 @@ summary(Rout)
 
 
 # Repeatability of pairwise ranks
-```{r}
-# Get all pairwise differences in adjusted ED50 between high confidence genos in 2020 and 2021
-test <- out %>%
-  group_by(date) %>%
-  summarise(diff = combn(ed50_adj, 2, diff),
-            test = combn(geno, 2, paste, simplify = FALSE)) %>%  
-  mutate(pair = unlist(lapply(test, function(x) paste(x, collapse="-")))) %>%  
-  select(-test) %>%
-  ungroup()
-
-test2 <- test %>%
-  pivot_wider(names_from = date, values_from = diff) %>%
-  # mutate(`202006rank` = sign(`202006`) == sign(`202010`),
-  #        `202109rank` = sign(`202109`) == sign(`202010`)) %>%
-  #select(pair, diff202010 = `202010`, `202006rank`, `202109rank`) %>%
-  #pivot_longer(c(`202006rank`, `202109rank`), values_to = "samerank") %>%
-  pivot_longer(c(`202006`, `202109`)) %>%
-  drop_na()
-
-ggplot(test2, aes(x = `202010`, y = value)) + geom_point() +
-  geom_smooth()
-
-test3 <- test2 %>%
-  mutate(abs202010 = abs(`202010`),
-         tval = case_when(`202010` < 0 ~ value * -1, TRUE ~ value)) %>%
-  separate(pair, into = c("geno1", "geno2"), sep = "-")
-mod <- lm(tval ~ abs202010, data = test3)
-
-newdat <- data.frame(abs202010 = seq(0,1.55,0.01))
-pred0.5 <- data.frame(predict(mod, newdata = newdat, interval = "predict", level = 0.5, re.form = NA))
-pred0.9 <- data.frame(predict(mod, newdata = newdat, interval = "predict", level = 0.95))
-preds <- bind_cols(newdat, p0.5 = pred0.5, p0.9 = pred0.9) %>%
-  as_tibble()
-
-ggplot(test3, aes(x = abs202010)) + 
-  geom_point(aes(y = tval), alpha = 0.3, pch = 16) +
-  geom_smooth(aes(y = tval), method = "lm", se = FALSE) +
-  geom_ribbon(data = preds, aes(ymin = lwr...3, ymax = upr...4), alpha = 0.2) +
-  geom_ribbon(data = preds, aes(ymin = lwr...6, ymax = upr...7), alpha = 0.2) +
-  geom_hline(aes(yintercept = 0), lty = 1, lwd = 0.25) +
-  #scale_x_continuous(expand = c(0, 0)) +
-  theme_custom()
-
-### what about genos as random?
-# fit mixed model
-library(merTools)
-mod <- lmer(tval ~ abs202010 + (1|geno1) + (1|geno2) + (1|name), data = test3)
-fit <- data.frame(fit = predict(mod, newdata = newdat, re.form = NA)) %>% bind_cols(newdat)
-anova(mod)
-newdata <- tibble(newdat, geno1 = "ML6555", geno2 = "ML1fsdf0", name = "20200fd6")
-# use "predictInterval" -- but this makes you specify random factors? how to do across all?
-PI <- predictInterval(merMod = mod, newdata = newdata,
-                      level = 0.95, n.sims = 1000,
-                      stat = "median", type = "linear.prediction",
-                      include.resid.var = TRUE) %>%
-  as_tibble() %>% bind_cols(newdata)
-
-# use arm::sim
-PI.arm <- data.frame(
-  fit=apply(fitted(PI.arm.sims, fm1), 1, function(x) quantile(x, 0.500)),
-  upr=apply(fitted(PI.arm.sims, fm1), 1, function(x) quantile(x, 0.975)),
-  lwr=apply(fitted(PI.arm.sims, fm1), 1, function(x) quantile(x, 0.025))
-)
-
-
-ggplot(test3, aes(x = abs202010)) + 
-  geom_point(aes(y = tval), alpha = 0.3, pch = 16) +
-  geom_line(data = fit, aes(y = fit)) +
-  #geom_smooth(aes(y = tval), method = "lm", se = FALSE) +
-  geom_ribbon(data = PI, aes(ymin = lwr, ymax = upr), alpha = 0.2) +
-  geom_hline(aes(yintercept = 0), lty = 1, lwd = 0.25) +
-  #scale_x_continuous(expand = c(0, 0)) +
-  theme_custom()
-
-
-
-
-
-
-
-
-####
-
-mod <- glm(samerank ~ abs(diff202010), data = test2, family = "binomial")
-anova(mod)
-
-# Get probability that rank order is same given difference in 2020 ED50s
-emm <- emmeans::emmeans(mod, specs = "diff202010", 
-                        at = list(diff202010 = seq(0,2.0,0.01)),
-                        type = "response")
-ggplot(data.frame(emm), aes(x = diff202010, y = prob)) +
-  geom_line() +
-  geom_ribbon(aes(ymin = asymp.LCL, ymax = asymp.UCL), alpha = 0.2) +
-  labs(x = "Pairwise difference in ED50 (°C)\nin Test 1 (2020)",
-       y = "Probability of same rank order\nin Test 2 (2021)") +
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 2)) +
-  theme_custom() +
-  theme(text = element_text(size = 14)) +
-  coord_cartesian(ylim = c(0.5, 1), expand = c(0, 0))
-
-
-```
 
 # How confident can we be in identifying GROUPS of more/less tolerant corals?
 ```{r}
@@ -367,6 +265,23 @@ set.seed(4)
 subset <- bins %>% 
   group_by(bin) %>%
   slice_sample(n = 8)  # 4 genos per bin = 36 genos for simulations, including all top and bottom genos
+
+# # Get top vs bot genos?
+# outwide <- out %>%
+#   pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) 
+# top25 <- outwide %>%
+#   arrange(ed50_adj_202010) %>%
+#   tail(20) %>% drop_na(ed50_202109)
+# bottom25 <- outwide %>%
+#   arrange(ed50_adj_202010) %>%
+#   head(20) %>% drop_na(ed50_202109)
+# 
+# topbot.unadj <- bind_rows(top25, bottom25) %>%
+#   select(geno, `202010` = ed50_202010, `202006` = ed50_202006, `202109` = ed50_202109) %>%
+#   pivot_longer(c(`202006`, `202109`)) %>% drop_na()
+# topbot.adj <- bind_rows(top25, bottom25) %>%
+#   select(geno, `202010` = ed50_adj_202010, `202006` = ed50_adj_202006, `202109` = ed50_adj_202109) %>%
+#   pivot_longer(c(`202006`, `202109`)) %>% drop_na()
 
 # Format input dataframes
 indf.unadj <- out %>%
@@ -399,193 +314,124 @@ reprun <- function(df, nsim, groupsize) replicate(nsim, ran(df, groupsize), simp
 
 library(furrr)
 plan(multiprocess)
+
 # Run simulations on unadjusted ED50 data
-runres.unadj <- tibble(groupsize = c(1,3,10,20)) %>%
+runres.unadj <- tibble(groupsize = c(1,3,10)) %>%
   mutate(runout = future_map(groupsize, ~reprun(indf.unadj, 10000, groupsize = .x)),
-         runout = map(runout, ~map_dfr(.x, bind_rows)))
-# Fit model for re-test (mean) difference between groups as a function of initial test difference
+         runout = map(runout, ~map_dfr(.x, bind_rows)),
+         fit = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
+         pred = map(fit, ~data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
+                                                   interval = "prediction", level = 0.9))),
+         pred = map(pred, ~ .x %>% mutate(absdiff.1 = seq(0, 2, 0.01))))
+# Fit model for re-test showing same rank as a function of initial test difference
 runres.unadj <- runres.unadj %>%
-  #WITH PREDICTION INTERVALS
-  mutate(mod = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
-         pred= map(mod, ~ data.frame(predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-                                 interval = "predict", level = 0.9))),
-         pred= map(pred, ~.x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
-  #WITH BINOMIAL MODEL
-  # mutate(mod = map(runout, ~glm(meandiff.2 > 0 ~ absdiff.1, data = .x, family = "binomial")),
-  #        pred = map(mod, ~ data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-  #                                                   type = "response"))),
-  #        pred = map(pred, ~ .x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
-# best way to calculate % of new observations that will be > 0? something weird about where the pred int crosses zero, because confidence should be 50% at 0, not 0....
-runres.unadj
-
-
-
-hi <- runres.adj %>%
-  select(groupsize, mod) %>%
-  crossing(conf = seq(0.1, 0.99, 0.01)) %>%
-  mutate(int = map2(mod, conf, ~ data.frame(predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-                                                    interval = "predict", level = .y)) %>%
-                                            mutate(absdiff.1 = seq(0, 2, 0.01))),
-         thresh = map_dbl(int, ~ .x %>% filter(lwr > 0) %>%
-                           summarize(thresh = min(absdiff.1)) %>%
-                           pull(thresh))) #%>%
-  #select(groupsize, conf, thresh)
-
-hi$int[[1]]
-
-ggplot(hi, aes(x = thresh, y = conf)) +
-  geom_line(aes(lty = factor(groupsize)))
-
-hi
+  mutate(mod = map(runout, ~glm(meandiff.2 > 0 ~ absdiff.1, data = .x, family = "binomial")),
+         prob = map(mod, ~ data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
+                                                    type = "response"))),
+         prob = map(prob, ~ .x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
          
+
+# Figure showing probability of same rank order in re-test
+allprob.unadj <- runres.unadj %>%
+  select(groupsize, prob) %>%
+  unnest(prob)
+
+ggplot(allprob.unadj, aes(x = absdiff.1, y = fit)) +
+  geom_line(aes(lty = factor(groupsize))) +
+  scale_x_continuous(breaks = seq(0, 2, 0.25)) +
+  scale_y_continuous(limits = c(0.5, 1)) +
+  theme_custom() +
+  theme(legend.position = c(0.8, 0.2)) +
+  labs(x = "∆ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
+ 
+
+# Supplementary figure showing re-test differences
 allout.unadj <- runres.unadj %>% 
   select(groupsize, runout) %>%
   unnest(runout)
 
-allpred.unadj <- runres.unadj %>%
+allpred.unadj <- runres.unadj %>% 
   select(groupsize, pred) %>%
   unnest(pred)
 
+ggplot(allout.unadj, aes(x = absdiff.1, y = meandiff.2)) +
+  facet_wrap(~groupsize) +
+  geom_point(alpha = 0.5, color = "gray") +
+  geom_ribbon(aes(y = fit.fit, ymin = fit.lwr, ymax = fit.upr), data = allpred.unadj, 
+              alpha = 0.2, fill = "blue") +
+  geom_hline(aes(yintercept = 0), lty = 1, lwd = 0.25) +
+  coord_cartesian(ylim = c(-1.5, 1.5), xlim = c(0, 1.5)) +
+  theme_custom()
 
-# Run simulations on ADjusted ED50 data
-runres.adj <- tibble(groupsize = c(1,3,10,20)) %>%
+
+
+# Run simulations on ADJusted ED50 data
+runres.adj <- tibble(groupsize = c(1,3,10)) %>%
   mutate(runout = future_map(groupsize, ~reprun(indf.adj, 10000, groupsize = .x)),
-         runout = map(runout, ~map_dfr(.x, bind_rows)))
-# Fit model for re-test (mean) difference between groups as a function of initial test difference
+         runout = map(runout, ~map_dfr(.x, bind_rows)),
+         fit = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
+         pred = map(fit, ~data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
+                                                   interval = "prediction", level = 0.9))),
+         pred = map(pred, ~ .x %>% mutate(absdiff.1 = seq(0, 2, 0.01))))
+# Fit model for re-test showing same rank as a function of initial test difference
 runres.adj <- runres.adj %>%
-  mutate(mod = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
-         pred= map(mod, ~ data.frame(predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-                                 interval = "predict", level = 0.9))),
-         pred= map(pred, ~.x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
-         
+  mutate(mod = map(runout, ~glm(meandiff.2 > 0 ~ absdiff.1, data = .x, family = "binomial")),
+         prob = map(mod, ~ data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
+                                                    type = "response"))),
+         prob = map(prob, ~ .x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
+
+# Figure showing probability of same rank order in re-test
+allprob.adj <- runres.adj %>%
+  select(groupsize, prob) %>%
+  unnest(prob)
+
+ggplot(allprob.adj, aes(x = absdiff.1, y = fit)) +
+  geom_line(aes(lty = factor(groupsize))) +
+  scale_x_continuous(breaks = seq(0, 2, 0.25)) +
+  scale_y_continuous(limits = c(0.5, 1)) +
+  theme_custom() +
+  theme(legend.position = c(0.8, 0.2)) +
+  labs(x = "∆ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
+ 
+
+# Supplementary figure showing re-test differences
 allout.adj <- runres.adj %>% 
   select(groupsize, runout) %>%
   unnest(runout)
 
-allpred.adj <- runres.adj %>%
+allpred.adj <- runres.adj %>% 
   select(groupsize, pred) %>%
   unnest(pred)
 
-
-
-# ggplot(allout.unadj, aes(x = absdiff.1, y = meandiff.2)) +
-#   facet_wrap(~groupsize) +
-#   geom_point(alpha = 0.5, color = "gray") +
-#   geom_ribbon(aes(y = fit, ymin = lwr, ymax = upr), data = allpred.unadj, alpha = 0.2, fill = "blue") +
-#   geom_hline(aes(yintercept = 0), lty = 1, lwd = 0.25) +
-#   coord_cartesian(ylim = c(-1.5, 1.5), xlim = c(0, 1.5)) +
-#   theme_custom()
-
-ggplot(allpred.unadj, aes(y = absdiff.1, x = fit)) +
-  geom_line(aes(lty = factor(groupsize)))
-  
-  
-
-
-thresh.unadj <- allpred.unadj %>%
-  group_by(groupsize) %>%
-  filter(lwr > 0) %>%
-  summarize(thresh = min(absdiff.1))
-
-thresh.adj <- allpred.adj %>%
-  group_by(groupsize) %>%
-  filter(lwr > 0) %>%
-  summarize(thresh = min(absdiff.1))
-
-ggplot(data = thresh.unadj, aes(x = groupsize, y = thresh)) +
-  geom_point(color = "gray") +
-  geom_line(color = "gray") +
-  geom_point(data = thresh.adj, color = "black") +
-  geom_line(data = thresh.adj, color = "black") +
-  scale_y_continuous(limits = c(0, 2), expand = c(0, 0)) +
-  scale_x_continuous(limits = c(0, 20)) +
+ggplot(allout.adj, aes(x = absdiff.1, y = meandiff.2)) +
+  facet_wrap(~groupsize) +
+  geom_point(alpha = 0.5, color = "gray") +
+  geom_ribbon(aes(y = fit.fit, ymin = fit.lwr, ymax = fit.upr), data = allpred.adj, 
+              alpha = 0.2, fill = "blue") +
+  geom_hline(aes(yintercept = 0), lty = 1, lwd = 0.25) +
+  coord_cartesian(ylim = c(-1.5, 1.5), xlim = c(0, 1.5)) +
   theme_custom()
-  
-
-### this is pretty cool ^^^^.... 
-# maybe also compare to unadjusted ed50s
-### YES ^^^ do these simulations with adjusted and unadjusted ED50s!!!
-
-# # Need to just manually get groups with the biggest diffs...
-# there are SO many random combinations that the biggest diff groups are not appearing in randomized simulations
-# get top and bottom before running sims?
-outwide <- out %>%
-  pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) 
-top25 <- outwide %>%
-  arrange(ed50_adj_202010) %>%
-  tail(15) %>% drop_na(ed50_adj_202109)
-bottom25 <- outwide %>%
-  arrange(ed50_adj_202010) %>%
-  head(15) %>% drop_na(ed50_adj_202109)
-
-topbot <- bind_rows(top25, bottom25) %>%
-  select(geno, `202010` = ed50_adj_202010, `202006` = ed50_adj_202006, `202109` = ed50_adj_202109) %>%
-  pivot_longer(c(`202006`, `202109`)) %>% drop_na()
-res <- reprun(topbot, 1000, groupsize = 1)
-res <- map_dfr(res, bind_rows)
-mod <- lm(meandiff.2 ~ absdiff.1, data = res)
-pred <- data.frame(predict(mod, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)), 
-                           interval = "predict", level = 0.9)) %>% mutate(absdiff.1 = seq(0, 2, 0.01))
-thresh <- tibble(conf = seq(0.5, 1, 0.05)) %>%
-  mutate(int = map(conf, ~ data.frame(predict(mod, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-                              interval = "predict", level = .x)) %>% mutate(absdiff.1 = seq(0, 2, 0.01)))) %>%
-  mutate(thresh = map_dfr(int, ~ .x %>% filter(lwr > 0) %>% summarize(thresh = min(absdiff.1))))
-ggplot(res, aes(x = absdiff.1, y = meandiff.2)) + geom_point(alpha = 0.1) +
-  geom_smooth(method = "lm") +
-  geom_ribbon(data = pred, aes(y = fit, ymin = lwr, ymax = upr), alpha = 0.2)
-
-
-modp <- glm(meandiff.2 > 0 ~ absdiff.1, data = res, family = "binomial")
-predp <- data.frame(fit = predict(modp, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)), 
-                                  type = "response")) %>% mutate(absdiff.1 = seq(0, 2, 0.01))
-ggplot(predp, aes(x = absdiff.1)) + 
-  geom_line(data = predp, aes(y = fit), alpha = 0.2)
 
 
 
+# Combine adj and unadj
+# Figure showing probability of same rank order in re-test
+allprob <- bind_rows(adj = allprob.adj, unadj = allprob.unadj, .id = "set")
 
+probplot <- ggplot(allprob, aes(x = absdiff.1, y = fit)) +
+  geom_line(aes(lty = factor(groupsize), color = set)) +
+  #geom_hline(yintercept = 0.95) +
+  scale_x_continuous(breaks = seq(0, 2, 0.25)) +
+  scale_y_continuous(limits = c(0.5, 1)) +
+  scale_linetype(name = "Group size") +
+  scale_color_manual(values = c("black", "gray"), guide = "none") +
+  theme_custom() +
+  theme(legend.position = c(0.8, 0.2)) +
+  labs(x = "∆ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
 
-
-
-
+ggsave(probplot, filename = "output/probplot.png", width = 80, height = 80, units = "mm")
 ```
 
 
 
-
-```{r old_code, include = F, eval = F, echo = F}
-
-#Repeatability coefficient
-# Mean within-subject sample variance
-res3 <- res2 %>% rowwise() %>% mutate(var = var(c(ed50_2021, ed50_2020)))
-var_w <- mean(res3$var, na.rm = TRUE)
-# Within-subject sample standard deviation
-s_w <- sqrt(var_w)
-# Coefficient of repeatability
-rc95 <- 1.96 * sqrt(2) * s_w
-rc95   # 95% of the time, repeat measurements will differ by less than rc     0.84
-rc90 <- 1.645 * sqrt(2) * s_w
-rc90
-
-# statistical repeatability
-probs <- tibble(
-  p = seq(0.01, 0.99, 0.01),
-  t = qt((1-seq(0.01,0.99,0.01))/2, lower.tail = F, df = Inf),
-  y = t * sqrt(2) * s_w
-)
-
-ggplot(probs, aes(y = p, x = y)) +
-  geom_line() +
-  labs(y = "Percent of cases (genets)", x = "Test - retest difference in ED50 (°C)") +
-  geom_vline(aes(xintercept = 0.95), lty = 2) +
-  annotate("text", x = 0.8, y = 0.7, label = "Repeatability coefficient")
-
-val <- qt((1-seq(0.01,0.99,0.01))/2, lower.tail = F, df = Inf) * sqrt(2) * s_w
-plot(seq(0.01,0.99,0.01), val)
-pt(seq(0.01,0.99,0.01), df = Inf) * sqrt(2) * s_w
-plot(seq(0.01,0.99,0.01), tt)
-
-
-
-```
 
