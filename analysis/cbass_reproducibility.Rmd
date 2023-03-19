@@ -49,7 +49,7 @@ ed50_202006 <- read_csv("data/reproducibility/processed/ed50_202006.csv") %>%
 #   select(nursery, geno, ed50_2020 = ed50, std.error_2020 = std.error)
 
 ### new Oct 2020 data freshly exported from CBASS_FL_Acer repo
-ed50_202010 <- read_csv("data/reproducibility/processed/ed50_2020.csv") %>%
+ed50_202010 <- read_csv("data/reproducibility/processed/ed50_202010.csv") %>%
   mutate(nursery = case_when(nursery == "RR" ~ "rrt", TRUE ~ tolower(nursery))) %>%
   select(nursery, geno = name, ed50 = ed50, std.error = std.error)
 
@@ -99,15 +99,15 @@ longdf <- bind_rows(ed50_202006, ed50_202010, ed50_202109) %>%
 # Plot and analyze unadjusted data
 ```{r}
 # Analyze sources of variance
-mod <- lm(ed50 ~ geno + nursery:date, data = toplongdf)
+mod <- lm(ed50 ~ geno + nursery:date, data = longdf)
 anova(mod)
-ress <- augment(mod, toplongdf) %>% arrange(-.cooksd)
+ress <- augment(mod, longdf) %>% arrange(-.cooksd)
 hist(ress$.cooksd, breaks = 50)
 highcooks <- ress %>% filter(.cooksd > 0.05)
 
 
 # Remove genotypes with highest cooksD
-toplongdf <- toplongdf %>% filter(!geno %in% highcooks$geno)
+toplongdf <- longdf %>% filter(!geno %in% highcooks$geno)
 # Refit model
 mod.refit <- lm(ed50 ~ nursery:date + geno, data = toplongdf)
 modres <- tidy(anova(mod.refit))
@@ -141,7 +141,8 @@ unadj.corr <- ggplot(topwidedf, aes(x = ed50_202010)) +
   #geom_label(aes(y = ed50_202109, label = geno)) +
   #stat_cor() +
   coord_fixed(xlim = range(toplongdf$ed50), ylim = range(toplongdf$ed50)) +
-  theme_custom(); unadj.corr
+  theme_custom() +
+  labs(x = "ED50 (°C) in Test 1", y = "ED50 (°C) in Test 2"); unadj.corr
 
 
 
@@ -165,12 +166,16 @@ conf0.5 <- dens$x[which.min(abs(0.5 - dens$cd))]
 conf0.9 <- dens$x[which.min(abs(0.9 - dens$cd))]
 
 myecdf <- ggplot(res.unadj, aes(x = abs(diff))) +
-  geom_segment(aes(y = 0.5, yend = 0.5, x = 0, xend = conf0.5), lty = 2, alpha = 0.4, lwd = 0.25) +
-  geom_segment(aes(x = conf0.5, xend = conf0.5, y = 0, yend = 0.5), lty= 2, alpha = 0.4, lwd = 0.25) +
-  geom_segment(aes(y = 0.9, yend = 0.9, x = 0, xend = conf0.9), lty = 2, alpha = 0.4, lwd = 0.25) +
-  geom_segment(aes(x = conf0.9, xend = conf0.9, y = 0, yend = 0.9), lty= 2, alpha = 0.4, lwd = 0.25) +
+  geom_segment(aes(y = 0.5, yend = 0.5, x = 0, xend = conf0.5), 
+               lty = 2, alpha = 0.4, lwd = 0.25, color = "gray") +
+  geom_segment(aes(x = conf0.5, xend = conf0.5, y = 0, yend = 0.5), 
+               lty= 2, alpha = 0.4, lwd = 0.25, color = "gray") +
+  geom_segment(aes(y = 0.9, yend = 0.9, x = 0, xend = conf0.9), 
+               lty = 2, alpha = 0.4, lwd = 0.25, color = "gray") +
+  geom_segment(aes(x = conf0.9, xend = conf0.9, y = 0, yend = 0.9), 
+               lty= 2, alpha = 0.4, lwd = 0.25, color = "gray") +
   #geom_rect(data = myvals, aes(xmin = 0, xmax = diff, ymin = 0, ymax = perc), alpha = 0.2) +
-  stat_ecdf(color = "red", alpha = 0.5) +
+  stat_ecdf(color = "gray", alpha = 0.5) +
   scale_x_continuous(expand = c(0, 0), breaks = seq(0, 2, 0.25)) +
   coord_cartesian(xlim = c(0, 1.2)) +
   scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 0.9, 1), labels = scales::percent, expand = c(0, 0)) +
@@ -224,14 +229,14 @@ adj.corr <- out %>% pivot_wider(names_from = date, values_from = c(ed50, ed50_ad
 
 
 ecdf2 <- myecdf +
-  #geom_segment(aes(y = 0.5, yend = 0.5, x = 0, xend = adjconf0.5), lty = 2) +
-  geom_segment(aes(x = adjconf0.5, xend = adjconf0.5, y = 0, yend = 0.5), lty= 2, lwd = 0.25) +
-  geom_text(x = adjconf0.5, y = 0.02, label = round(adjconf0.5, 2), adj = 1) +
-  #geom_segment(aes(y = 0.9, yend = 0.9, x = 0, xend = adjconf0.9), lty = 2) +
-  geom_segment(aes(x = adjconf0.9, xend = adjconf0.9, y = 0, yend = 0.9), lty= 2, lwd = 0.25) +
-  geom_text(x = adjconf0.9, y = 0.02, label = round(adjconf0.9, 2), adj = 1) +
+  geom_segment(aes(y = 0.5, yend = 0.5, x = 0, xend = adjconf0.5), lty = 2, lwd = 0.2) +
+  geom_segment(aes(x = adjconf0.5, xend = adjconf0.5, y = 0, yend = 0.5), lty= 2, lwd = 0.2) +
+  geom_text(x = adjconf0.5 - 0.01, y = 0.02, label = round(adjconf0.5, 2), adj = 1, size = 3) +
+  geom_segment(aes(y = 0.9, yend = 0.9, x = 0, xend = adjconf0.9), lty = 2, lwd = 0.2) +
+  geom_segment(aes(x = adjconf0.9, xend = adjconf0.9, y = 0, yend = 0.9), lty= 2, lwd = 0.2) +
+  geom_text(x = adjconf0.9 + 0.01, y = 0.02, label = round(adjconf0.9, 2), adj = 0, size = 3) +
   #geom_rect(data = myvals, aes(xmin = 0, xmax = diff, ymin = 0, ymax = perc), alpha = 0.2) +
-  stat_ecdf(data = res.adj, color = "red"); ecdf2
+  stat_ecdf(data = res.adj, color = "black"); ecdf2
 ```
 
 ```{r}
@@ -242,13 +247,6 @@ repro.fig <- plot_grid(unadj.corr, adj.corr, ecdf2, nrow = 1,
 ggsave(repro.fig, filename = "output/reprofig.png", width = 183, height = 80, units = "mm")
 ```
 
-
-
-
-
-####------
-# everything below is older code from arond reef futures conference...
-# Filter out ED50 measurements with high error (lower confidence in value)
 
 
 # Estimate repeatability of ED50 for same genotype
@@ -443,10 +441,20 @@ probplot <- ggplot(allprob, aes(x = absdiff.1, y = fit)) +
   scale_linetype(name = "Group size") +
   scale_color_manual(values = c("black", "gray"), guide = "none") +
   theme_custom() +
-  theme(legend.position = c(0.8, 0.2)) +
-  labs(x = "∆ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
+  theme(legend.position = c(0.8, 0.2),
+        legend.text = element_text(size = 5),
+        legend.title = element_text(size = 5),
+        legend.key.size = unit(3, "mm")) +
+  labs(x = "Difference in ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
 
-ggsave(probplot, filename = "output/probplot.png", width = 80, height = 80, units = "mm")
+ggsave(probplot, filename = "output/probplot.png", width = 60, height = 60, units = "mm")
+
+
+allprob %>% group_by(set, groupsize) %>%
+  filter(fit > 0.9) %>%
+  summarize(min(absdiff.1))
+
+range(longdf$ed50)
 ```
 
 
