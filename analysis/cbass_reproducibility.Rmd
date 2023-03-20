@@ -108,6 +108,9 @@ highcooks <- ress %>% filter(.cooksd > 0.05)
 
 # Remove genotypes with highest cooksD
 toplongdf <- longdf %>% filter(!geno %in% highcooks$geno)
+# How many remaining after filtering outliers
+toplongdf %>% count(date)
+n_distinct(toplongdf$geno)
 # Refit model
 mod.refit <- lm(ed50 ~ nursery:date + geno, data = toplongdf)
 modres <- tidy(anova(mod.refit))
@@ -120,8 +123,8 @@ modres %>%
 topwidedf <- toplongdf %>%
   pivot_wider(names_from = date, values_from = c(ed50, std.error))
 
-mod2 <- lm(ed50_202109 ~ ed50_202010 + nursery, data = topwidedf)
-anova(mod2)
+# mod2 <- lm(ed50_202109 ~ ed50_202010 + nursery, data = topwidedf)
+# anova(mod2)
 
 
 # Scatter plots of test-retest ED50s (unadjusted)
@@ -237,6 +240,11 @@ ecdf2 <- myecdf +
   geom_text(x = adjconf0.9 + 0.01, y = 0.02, label = round(adjconf0.9, 2), adj = 0, size = 3) +
   #geom_rect(data = myvals, aes(xmin = 0, xmax = diff, ymin = 0, ymax = perc), alpha = 0.2) +
   stat_ecdf(data = res.adj, color = "black"); ecdf2
+
+
+# Compare all diffs between raw and adjusted ED50s
+summary(abs(res.unadj$diff))
+summary(abs(res.adj$diff))
 ```
 
 ```{r}
@@ -331,8 +339,9 @@ library(furrr)
 plan(multiprocess)
 
 # Run simulations on unadjusted ED50 data
+set.seed(8)
 runres.unadj <- tibble(groupsize = c(1,3,10)) %>%
-  mutate(runout = future_map(groupsize, ~reprun(indf.unadj, 10000, groupsize = .x)),
+  mutate(runout = future_map(groupsize, ~reprun(indf.unadj, 20000, groupsize = .x)),
          runout = map(runout, ~map_dfr(.x, bind_rows)),
          fit = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
          pred = map(fit, ~data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
@@ -381,8 +390,9 @@ ggplot(allout.unadj, aes(x = absdiff.1, y = meandiff.2)) +
 
 
 # Run simulations on ADJusted ED50 data
+set.seed(8)
 runres.adj <- tibble(groupsize = c(1,3,10)) %>%
-  mutate(runout = future_map(groupsize, ~reprun(indf.adj, 10000, groupsize = .x)),
+  mutate(runout = future_map(groupsize, ~reprun(indf.adj, 20000, groupsize = .x)),
          runout = map(runout, ~map_dfr(.x, bind_rows)),
          fit = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
          pred = map(fit, ~data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
@@ -446,6 +456,7 @@ probplot <- ggplot(allprob, aes(x = absdiff.1, y = fit)) +
         legend.title = element_text(size = 5),
         legend.key.size = unit(3, "mm")) +
   labs(x = "Difference in ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
+probplot
 
 ggsave(probplot, filename = "output/probplot.png", width = 60, height = 60, units = "mm")
 
