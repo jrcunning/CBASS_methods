@@ -469,6 +469,133 @@ md <- rack_pos %>%
 # List PAM files from 2021-09-06
 pamfiles <- list.files(path = "data/classic_cbass/IPAM_data/classic", pattern = "*.csv", recursive = TRUE, full.names = TRUE)
 
+
+# Import data from each file
+
+#try_read_delim <- possibly(read_delim, otherwise = NULL)
+
+pam1 <- pamfiles %>%
+  map_dfr(read_delim, delim = ";", .id = "file_id")
+#map means to take code and apply it to every file that's listed in pamfiles and store it into pam1. delim = delimiter. ; inbetween every value
+
+pam2 <- pam1 %>%
+  janitor::clean_names() %>%
+  mutate(file_id = basename(pamfiles[as.numeric(file_id)])) %>%
+  mutate(datetime = as_datetime(paste(date, time), tz = "America/Chicago", format = "%d.%m.%y %T"),
+         local_datetime = with_tz(datetime, tzone = "Pacific/Tahiti"),
+         date = as_date(local_datetime))
+
+
+# # For files that have multiple sat pulses -- keep the last one only
+pam3 <- pam2 %>%
+  group_by(file_id, date) %>%
+  filter(no == max(no)) %>%
+  ungroup()
+
+pam3 %>%
+    filter(no > 1)
+
+pam3 %>% filter(date == "2022-12-06", file_id == "23_aoi.csv")
+
+ # For each source file, convert to long form data with F, FM, and YII for each AOI
+pam4 <- pam3 %>%
+  nest(-file_id, -date) %>%
+  mutate(data2 = map(data, ipam_convert)) %>%
+  unnest(data2) %>%
+  group_by(file_id, date) %>%
+  select(file_id, date, time, aoi, var, value)
+    # Multiple data sets within each file, organized by file, AOI, variable and value
+
+pam5 <- pam4 %>%
+  separate(file_id, into = c("rack_no", "junk")) %>%
+  mutate(rack_no = as.numeric(rack_no))
+    # separate() used to turn a single character column into multiple columns -> "file_id" into "rack_no" and "junk". rack_no changed into numeric rather than character
+
+# Join PAM data with rack order information (which PAM file corresponds to which rack of corals)
+pam6 <- pam5 %>%
+  group_by(rack_no, date) %>%
+  mutate(position = ceiling(as.numeric(aoi)/2)) %>%
+  ungroup()
+    # New column known as "position"[numeric] in order to place AOI datasets with same coral fragment
+
+pam7 <- full_join(pam6, md, by = c("date", "rack_no", "position"))
+    # left_join() -> includes all rows from first (left) table, but only rows from second (right) table that match the first table. Need to join to full_join() to include pam6 & md (metadata)
+```
+
+### Plot figure for classic results
+```{r}
+pam8 <- pam7 %>%
+  separate(frag_id, into = c("genotype", "frag")) 
+
+
+
+# Get control-heated diffs for each genotype with std error
+finalpam <- pam8 %>%
+  filter(var == "y_ii_") %>%
+  mutate(tank = factor(tank))
+
+View(finalpam)
+
+# Get averages for plotting
+fvfm_summary <- finalpam %>%
+    group_by(date, treatment, genotype) %>%
+    summarise(fvfm_avg = mean(value))
+
+# Plot
+myplot <- ggplot(finalpam, aes(x = date, y = value, color = genotype, asp = 1)) +
+    geom_point(aes(shape = treatment), alpha = 0.25) +
+      scale_shape_manual(values = c(15, 16, 6, 11)) +
+    #geom_line(aes(color = genotype)) +
+    facet_wrap(~genotype)
+
+
+myplot
+
+
+
+myplot +
+  geom_line(aes(y = fvfm_avg, linetype = treatment), data = fvfm_summary)
+
+
+library(lme4)
+mod <- lmer(value ~ treatment * genotype + (1|tank) + (1|frag), data = finalpam)
+car::Anova(mod)
+library(emmeans)
+emm <- emmeans(mod, specs = "treatment", by = "genotype")
+diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
+diffsres <- tibble(data.frame(diffs)) %>%
+  arrange(estimate) %>%
+  mutate(genotype = fct_reorder(factor(genotype), -estimate))
+
+res <- finalpam %>%
+  filter(date == "2022-12-13", var == "y_ii_") %>%
+  group_by(genotype, treatment) %>%
+  summarize(mean = mean(value), sd = sd(value)) %>%
+  ungroup() %>%
+  mutate(genotype = factor(genotype, levels = levels(diffsres$genotype)))
+
+classicresfig <- res %>%
+  mutate(treatment = factor(treatment, levels = c("high", "ambient"))) %>%
+  ggplot(aes(x = genotype, y = mean, shape = treatment)) +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), lwd = 0.25, width = 0) +
+  geom_point(size = 2) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "Genet", y = "Fv/Fm"); classicresfig
+
+```
+
+
+
+
+
+####^^^Anuj above this line
+### Import I-PAM data
+```{r}
+# Import PAM data
+# List PAM files from 2021-09-06
+pamfiles <- list.files(path = "data/classic_cbass/IPAM_data/classic", pattern = "*.csv", recursive = TRUE, full.names = TRUE)
+
 slowburnpamfiles <- pamfiles[grepl("Slow", pamfiles)]
 
 # Import data from each file
