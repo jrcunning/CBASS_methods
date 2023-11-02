@@ -98,7 +98,7 @@ ggsave(cbasstempsfig, filename = "output/cbass_temps.png", width = 60, height = 
 
 ```
 
-### Classic experiment profiles
+### Classic experiment temperature profiles
 ```{r}
 temps <- read_csv("data/classic_cbass/temperature_logs/LOG_CLASSIC.TXT") %>%
     # Remove internal header rows
@@ -241,7 +241,7 @@ md <- md %>%
 
 ```
 
-### Import I-PAM data
+### Import I-PAM data from CBASS
 ```{r}
 # Import PAM data
 # List PAM files from 2021-09-06
@@ -290,8 +290,6 @@ pam <- left_join(pam, md) %>% left_join(corals)
 
 ### Fit dose-response curves
 ```{r}
-
-
 # Get Fv/Fm data and tidy
 df <- pam %>%
   mutate(max_temp = as.numeric(temp)) %>%
@@ -393,13 +391,21 @@ vals <- vals %>%
 fvals <- fvals %>%
   mutate(geno = fct_reorder(factor(geno), ed50, .fun = mean, na.rm = TRUE))
 
+# Get finer scale fitted values for plotting
+pred <- fmods %>%
+  mutate(pred = map(ll3, ~augment(.x, newdata = data.frame(max_temp = seq(28.5, 40, 0.001))))) %>%
+  select(geno, pred) %>%
+  unnest(pred) %>%
+  mutate(geno = factor(geno))
+
+# Plot all drc's on separately
 alldrc <- ggplot(fvals, aes(x = max_temp, y = fvfmraw)) +
   facet_wrap(~geno) +
   geom_point(aes(shape = problem)) +
-  geom_line(aes(y = .fitted), data = drop_na(fvals)) +
-  geom_line(aes(y = .fitted), data = vals, lty = 2) +
+  geom_line(aes(y = .fitted), data = pred) +
+  #geom_line(aes(y = .fitted), data = vals, lty = 2) +
   geom_vline(aes(xintercept = estimate), data = fed50, lty = 1, lwd = 0.1) +
-  geom_vline(aes(xintercept = estimate), data = ed50, lty = 2, lwd = 0.1) +
+  #geom_vline(aes(xintercept = estimate), data = ed50, lty = 2, lwd = 0.1) +
   geom_text(aes(x = estimate, y = 0.05, label = round(estimate, 2)), data = fed50,
             size = 2, nudge_x = -1.5) +
   scale_shape_manual(values = c(4, 1)) +
@@ -409,42 +415,64 @@ alldrc <- ggplot(fvals, aes(x = max_temp, y = fvfmraw)) +
 
 ggsave(alldrc, filename = "output/alldrc.png", width = 183, height = 183, units = "mm")
 
-
-
-# Get finer scale fitted values for plotting
-test <- fmods %>%
-  mutate(pred = map(ll3, ~augment(.x, newdata = data.frame(max_temp = seq(28.5, 40, 0.05))))) %>%
-  select(geno, pred) %>%
-  unnest(pred) %>%
-  mutate(geno = factor(geno))
-
-drcs <- ggplot(test, aes(x = max_temp, y = .fitted, group = geno)) +
+# Plot all curves together
+drcs <- ggplot(pred, aes(x = max_temp, y = .fitted, group = geno)) +
   geom_line(alpha = 0.7, lwd = 0.25) +
   scale_x_continuous(limits = c(32, 38), expand = c(0, 0)) +
   theme_custom() +
   theme(legend.position = "none"); drcs
 
-ed50hist <- ggplot(fed50, aes(x = estimate)) +
-  geom_histogram(alpha = 0.5, position = "stack", breaks = seq(32,38,0.5)) +
-  scale_x_continuous(limits = c(32, 38), expand = c(0, 0)) +
-  theme_custom(); ed50hist
+# ed50hist <- ggplot(fed50, aes(x = estimate)) +
+#   geom_histogram(alpha = 0.5, position = "stack", breaks = seq(32,38.5,0.5)) +
+#   scale_x_continuous(limits = c(32, 38), expand = c(0, 0)) +
+#   theme_custom(); ed50hist
 
-drc_ed50_fig <- drcs + 
-  geom_histogram(data = fed50, inherit.aes = FALSE, alpha = 0.5,
-                 breaks = seq(32,38,0.5),
-                 aes(x = estimate, y = ..count../15)) +
-  scale_y_continuous(sec.axis = sec_axis(trans=~.*15, name = "Count of genet ED50s")) +
-  labs(x = "Temperature (°C)", y = "Fv/Fm"); drc_ed50_fig
+# drc_ed50_fig <- drcs + 
+#   geom_histogram(data = fed50, inherit.aes = FALSE, alpha = 0.5,
+#                  breaks = seq(32,38,0.5),
+#                  aes(x = estimate, y = ..count../15)) +
+#   scale_y_continuous(sec.axis = sec_axis(trans=~.*15, name = "Count of genet ED50s")) +
+#   labs(x = "Temperature (°C)", y = "Fv/Fm"); drc_ed50_fig
+# 
+# ggsave(drc_ed50_fig, filename = "output/drc_ed50.png", width = 80, height = 60, units = "mm")
 
-ggsave(drc_ed50_fig, filename = "output/drc_ed50.png", width = 80, height = 60, units = "mm")
+# Plot all curves together with labels for each colony
+library(ggrepel)
+
+fed50.2 <- fed50 %>% mutate(geno = factor(geno)) %>%
+  left_join(test) %>%
+  mutate(closest = abs(estimate - max_temp)) %>%
+  group_by(geno) %>%
+  filter(closest == min(closest)) %>%
+  ungroup()
+top <- fed50.2 %>% slice_max(estimate, n = 10)
+bottom <- fed50.2 %>% slice_min(estimate, n = 10)
+
+drc_ed50_fig2 <- drcs +
+  geom_line(alpha = 1, lwd = 0.25, color = "black") +
+  scale_x_continuous(limits = c(32, 38.5), expand = c(0, 0)) +
+  geom_text_repel(data = top, aes(x = estimate, y = .fitted, label = geno), size = 2.4,
+                  max.overlaps = Inf, box.padding = 0.25, segment.size = 0.1, direction = "x", 
+                  xlim = c(34.9, 38.5), ylim = c(0.47, 0.47), force = 1, seed = 15, segment.linetype = 3) +
+  geom_text_repel(data = bottom, aes(x = estimate, y = .fitted, label = geno), size = 2.4,
+                  max.overlaps = Inf, box.padding = 0.25, point.padding = 0, force = 10, direction = "x",
+                  xlim = c(32, 35.8), ylim = c(0.01, 0.01), segment.size = 0.1, seed = 5, segment.linetype = 3) +
+  labs(x = "Temperature (°C)", y = "Fv/Fm"); drc_ed50_fig2
+  
+ggsave(drc_ed50_fig2, filename = "output/drc_ed50.png", width = 80, height = 60, units = "mm")
+
+# cbass_classic_results <- plot_grid(drc_ed50_fig2, classicresfig, nrow = 1, labels = "auto")
+# ggsave(cbass_classic_results, filename = "output/cbass_classic_results2.png", 
+#        width = 183, height = 80, units = "mm")
+
 ```
 
 ### Write ED50s to file
 ```{r}
 fed50 %>%
-  mutate(tag_no = factor(geno)) %>%
+  mutate(tag_no = geno) %>%
   full_join(ed50, by = c("tag_no", "term", "curve")) %>%
-  select(geno, ed50 = estimate.y, std.error = std.error.y,
+  select(geno = tag_no, ed50 = estimate.y, std.error = std.error.y,
          ed50.f = estimate.x, std.error.f = std.error.x) %>%
   write_csv(path = "data/classic_cbass/processed/ed50.csv")
 ```
@@ -461,22 +489,41 @@ rack_pos <- read_csv("data/classic_cbass/CLASSIC_rack_position_map.csv") %>%
 
 md <- rack_pos %>%
   filter(time == "evening")
+
+treatments <- md %>%
+  group_by(frag_id) %>%
+  count(treatment) %>%
+  filter(n == max(n)) %>%
+  mutate(.treatment = treatment) %>%
+  ungroup()
+
+md <- left_join(md, treatments, by = "frag_id") %>%
+  mutate(treatment = .treatment)
+
+md %>% filter(treatment.x != treatment) %>%
+  print(n = nrow(.))
+
+md %>% filter(frag_id == "1 6")
+rack_pos %>% filter(frag_id == "1 6")
+
+rack_pos %>%
+  group_by(frag_id) %>%
+  count() %>%
+  print(n= nrow(.))
+
+rack_pos %>% filter(frag_id == "5 7")
+rack_pos %>% filter(frag_id == "4 7")
 ```
 
 ### Import I-PAM data
 ```{r}
 # Import PAM data
-# List PAM files from 2021-09-06
+# List PAM files from classic experiment
 pamfiles <- list.files(path = "data/classic_cbass/IPAM_data/classic", pattern = "*.csv", recursive = TRUE, full.names = TRUE)
 
-
 # Import data from each file
-
-#try_read_delim <- possibly(read_delim, otherwise = NULL)
-
 pam1 <- pamfiles %>%
   map_dfr(read_delim, delim = ";", .id = "file_id")
-#map means to take code and apply it to every file that's listed in pamfiles and store it into pam1. delim = delimiter. ; inbetween every value
 
 pam2 <- pam1 %>%
   janitor::clean_names() %>%
@@ -485,41 +532,31 @@ pam2 <- pam1 %>%
          local_datetime = with_tz(datetime, tzone = "Pacific/Tahiti"),
          date = as_date(local_datetime))
 
-
-# # For files that have multiple sat pulses -- keep the last one only
+# For files that have multiple sat pulses -- keep the last one only
 pam3 <- pam2 %>%
   group_by(file_id, date) %>%
   filter(no == max(no)) %>%
   ungroup()
 
-pam3 %>%
-    filter(no > 1)
-
-pam3 %>% filter(date == "2022-12-06", file_id == "23_aoi.csv")
-
- # For each source file, convert to long form data with F, FM, and YII for each AOI
+# For each source file, convert to long form data with F, FM, and YII for each AOI
 pam4 <- pam3 %>%
   nest(-file_id, -date) %>%
   mutate(data2 = map(data, ipam_convert)) %>%
   unnest(data2) %>%
   group_by(file_id, date) %>%
   select(file_id, date, time, aoi, var, value)
-    # Multiple data sets within each file, organized by file, AOI, variable and value
 
 pam5 <- pam4 %>%
   separate(file_id, into = c("rack_no", "junk")) %>%
   mutate(rack_no = as.numeric(rack_no))
-    # separate() used to turn a single character column into multiple columns -> "file_id" into "rack_no" and "junk". rack_no changed into numeric rather than character
 
 # Join PAM data with rack order information (which PAM file corresponds to which rack of corals)
 pam6 <- pam5 %>%
   group_by(rack_no, date) %>%
   mutate(position = ceiling(as.numeric(aoi)/2)) %>%
   ungroup()
-    # New column known as "position"[numeric] in order to place AOI datasets with same coral fragment
 
 pam7 <- full_join(pam6, md, by = c("date", "rack_no", "position"))
-    # left_join() -> includes all rows from first (left) table, but only rows from second (right) table that match the first table. Need to join to full_join() to include pam6 & md (metadata)
 ```
 
 ### Plot figure for classic results
@@ -527,14 +564,9 @@ pam7 <- full_join(pam6, md, by = c("date", "rack_no", "position"))
 pam8 <- pam7 %>%
   separate(frag_id, into = c("genotype", "frag")) 
 
-
-
-# Get control-heated diffs for each genotype with std error
 finalpam <- pam8 %>%
   filter(var == "y_ii_") %>%
   mutate(tank = factor(tank))
-
-View(finalpam)
 
 # Get averages for plotting
 fvfm_summary <- finalpam %>%
@@ -542,119 +574,26 @@ fvfm_summary <- finalpam %>%
     summarise(fvfm_avg = mean(value))
 
 # Plot
-myplot <- ggplot(finalpam, aes(x = date, y = value, color = genotype, asp = 1)) +
-    geom_point(aes(shape = treatment), alpha = 0.25) +
-      scale_shape_manual(values = c(15, 16, 6, 11)) +
-    #geom_line(aes(color = genotype)) +
-    facet_wrap(~genotype)
-
-
-myplot
-
-
-
-myplot +
-  geom_line(aes(y = fvfm_avg, linetype = treatment), data = fvfm_summary)
+myplot <- ggplot(finalpam, aes(x = date, y = value, color = rev(treatment), asp = 1)) +
+  geom_point(aes(shape = rev(treatment)), alpha = 0.25) +
+  scale_shape_manual(values = c(15, 16, 6, 11)) +
+  facet_wrap(~genotype) +
+  geom_line(aes(y = fvfm_avg), data = fvfm_summary) +
+  theme_custom() +
+  theme(legend.position = "none"); myplot
 
 
 library(lme4)
-mod <- lmer(value ~ treatment * genotype + (1|tank) + (1|frag), data = finalpam)
+mod <- lmer(value ~ treatment * genotype + (1|tank) + (1|frag), data = filter(finalpam, date == "2022-12-13"))
 car::Anova(mod)
 library(emmeans)
 emm <- emmeans(mod, specs = "treatment", by = "genotype")
 diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
 diffsres <- tibble(data.frame(diffs)) %>%
   arrange(estimate) %>%
-  mutate(genotype = fct_reorder(factor(genotype), -estimate))
+  mutate(genotype = fct_reorder(factor(genotype), estimate))
 
 res <- finalpam %>%
-  filter(date == "2022-12-13", var == "y_ii_") %>%
-  group_by(genotype, treatment) %>%
-  summarize(mean = mean(value), sd = sd(value)) %>%
-  ungroup() %>%
-  mutate(genotype = factor(genotype, levels = levels(diffsres$genotype)))
-
-classicresfig <- res %>%
-  mutate(treatment = factor(treatment, levels = c("high", "ambient"))) %>%
-  ggplot(aes(x = genotype, y = mean, shape = treatment)) +
-  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), lwd = 0.25, width = 0) +
-  geom_point(size = 2) +
-  theme_custom() +
-  theme(legend.position = "none") +
-  labs(x = "Genet", y = "Fv/Fm"); classicresfig
-
-```
-
-
-
-
-
-####^^^Anuj above this line
-### Import I-PAM data
-```{r}
-# Import PAM data
-# List PAM files from 2021-09-06
-pamfiles <- list.files(path = "data/classic_cbass/IPAM_data/classic", pattern = "*.csv", recursive = TRUE, full.names = TRUE)
-
-slowburnpamfiles <- pamfiles[grepl("Slow", pamfiles)]
-
-# Import data from each file
-pam1 <- slowburnpamfiles %>%
-  map_dfr(read_delim, delim = ";", .id = "file_id") %>%
-  janitor::clean_names() %>%
-  mutate(file_id = basename(slowburnpamfiles[as.numeric(file_id)]),
-         date = as_date(date, format = "%d.%m.%y"))
-
-# # For files that have multiple sat pulses -- keep the last one only
-pam1 <- pam1 %>%
-  group_by(file_id, date) %>%
-  filter(no == max(no)) %>%
-  ungroup()
-
-# For each source file, convert to long form data with F, FM, and YII for each AOI
-pam1 <- pam1 %>%
-  nest(-file_id, -date) %>%
-  mutate(data2 = map(data, ipam_convert)) %>%
-  unnest(data2) %>%
-  group_by(file_id, date) %>%
-  select(file_id, date, time, aoi, var, value)
-
-pam1 <- pam1 %>%
-  separate(file_id, into = c("rack_no", "junk")) %>%
-  mutate(rack_no = as.numeric(rack_no))
-  
-
-# Join PAM data with rack order information (which PAM file corresponds to which rack of corals)
-pam <- pam1 %>%
-  group_by(rack_no, date) %>%
-  mutate(position = ceiling(as.numeric(aoi)/2)) %>%
-  ungroup()
-
-pam <- left_join(pam, md, by = c("date", "rack_no", "position"))
-```
-
-### Plot figure for classic results
-```{r}
-pam <- pam %>%
-  separate(frag_id, into = c("genotype", "frag")) 
-
-
-
-# Get control-heated diffs for each genotype with std error
-finalpam <- pam %>%
-  filter(date == "2022-12-13", var == "y_ii_") %>%
-  mutate(tank = factor(tank))
-library(lme4)
-mod <- lmer(value ~ treatment * genotype + (1|tank) + (1|frag), data = finalpam)
-car::Anova(mod)
-library(emmeans)
-emm <- emmeans(mod, specs = "treatment", by = "genotype")
-diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
-diffsres <- tibble(data.frame(diffs)) %>%
-  arrange(estimate) %>%
-  mutate(genotype = fct_reorder(factor(genotype), -estimate))
-
-res <- pam %>%
   filter(date == "2022-12-13", var == "y_ii_") %>%
   group_by(genotype, treatment) %>%
   summarize(mean = mean(value), sd = sd(value)) %>%
@@ -675,39 +614,72 @@ ggsave(classicresfig, filename = "output/classicresfig.png", width = 80, height 
 
 ### Combined figure with CBASS and classic results
 ```{r}
-cbass_classic_results <- plot_grid(drc_ed50_fig, classicresfig, nrow = 1, labels = "auto")
-ggsave(cbass_classic_results, filename = "output/cbass_classic_results.png", 
+cbass_classic_results <- plot_grid(drc_ed50_fig2, classicresfig, nrow = 1, labels = "auto")
+ggsave(cbass_classic_results, filename = "output/cbass_classic_results2.png", 
        width = 183, height = 80, units = "mm")
 ```
 
 #---------------
 
 # Compare CBASS vs. Classic
-```{r}
-library(ggpubr)
 
+### Compare for each day of classic experiment
+```{r}
+# Get decline in classic for each geno for each day
+library(lme4)
+mod <- lmer(value ~ treatment * genotype * factor(date) + (1|tank) + (1|frag), 
+            data = filter(finalpam, date >= as_date("2022-12-06")))
+car::Anova(mod)
+library(emmeans)
+emm <- emmeans(mod, specs = "treatment", by = c("genotype", "date"))
+diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
+diffsres <- tibble(data.frame(diffs))
+
+# Combine declines in Fv/Fm on each day with CBASS data
 cbass <- fed50 %>%
   mutate(genotype = factor(geno)) %>%
   select(genotype, estimate, std.error)
 
+both <- full_join(cbass, diffsres, by = "genotype", suffix = c(".ed50", ".dfvfm"))
+
+# Plot decline in Fv/Fm on each day vs. CBASS ED50
+ggplot(both, aes(x = estimate.ed50, y = estimate.dfvfm)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~date) +
+  theme_custom() +
+  labs(x = "CBASS ED50 (°C)", y = "Classic ∆Fv/Fm (heated - control)")
+```
+
+## Compare for end of classic experiment
+```{r}
+# Get decline in classic for each geno for final day
+mod <- lmer(value ~ treatment * genotype + (1|tank) + (1|frag), 
+            data = filter(finalpam, date == as_date("2022-12-13")))
+car::Anova(mod)
+emm <- emmeans(mod, specs = "treatment", by = "genotype")
+diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
+diffsres <- tibble(data.frame(diffs))
+
 classic <- diffsres %>%
   select(genotype, estimate, std.error = SE)
 
-both <- full_join(cbass, classic, by = "genotype", suffix = c(".ed50", ".dfvfm"))
-
+# Combine final declines in Fv/Fm with CBASS data
+final <- full_join(cbass, classic, by = "genotype", suffix = c(".ed50", ".dfvfm"))
+  
 # Linear model / OLS
-mod <- lm(estimate.dfvfm ~ estimate.ed50, data = both)
+mod <- lm(estimate.dfvfm ~ estimate.ed50, data = final)
 anova(mod)
 
 # Passing Bablok regression
 library(mcr)
-PBreg <- mcreg(both$estimate.ed50, -both$estimate.dfvfm,
+PBreg <- mcreg(final$estimate.ed50, -final$estimate.dfvfm,
                method.reg = "PaBa",  method.ci = "bootstrap", nsamples = 9999)
 PBfit <- calcResponse(PBreg, x.levels = seq(min(both$estimate.ed50), max(both$estimate.ed50), 0.01), 
                       alpha = 0.1) %>% as_tibble()
 
 # Plot
-comp <- ggplot(both, aes(x = estimate.ed50, y = estimate.dfvfm)) +
+comp <- ggplot(final, aes(x = estimate.ed50, y = estimate.dfvfm)) +
   #geom_smooth(method = "lm", color = "black", lwd = 0.5) +
   geom_ribbon(data = PBfit, aes(x = X, ymin = -Y.LCI, ymax = -Y.UCI),
               inherit.aes = FALSE, fill = "gray", alpha = 0.6) +
