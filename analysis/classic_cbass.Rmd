@@ -94,8 +94,6 @@ cbasstempsfig <- ggplot(cbasstemps, aes(x = dttm, y = temp, group = max_temp)) +
   labs(x = "Time", y = "Temperature (°C)"); cbasstempsfig
 
 ggsave(cbasstempsfig, filename = "output/cbass_temps.png", width = 60, height = 80, units = "mm")
-  
-
 ```
 
 ### Classic experiment temperature profiles
@@ -210,7 +208,7 @@ ggsave(classictemps, filename = "output/classic_temps.png", width = 100, height 
 library(cowplot)
 profiles <- plot_grid(cbasstempsfig, classictemps, nrow = 1, rel_widths = c(0.5, 0.5), labels = "auto")
 profiles
-ggsave(profiles, filename = "output/cbass_classic_profiles.png", width = 183, height = 80, units = "mm")
+ggsave(profiles, filename = "output/Figure1.png", width = 183, height = 80, units = "mm")
 ```
 
 # -------------
@@ -413,7 +411,7 @@ alldrc <- ggplot(fvals, aes(x = max_temp, y = fvfmraw)) +
   theme(legend.position = "none") +
   labs(x = "Temperature (°C)", y = "Fv/Fm"); alldrc
 
-ggsave(alldrc, filename = "output/alldrc.png", width = 183, height = 183, units = "mm")
+ggsave(alldrc, filename = "output/FigureS1.png", width = 183, height = 183, units = "mm")
 
 # Plot all curves together
 drcs <- ggplot(pred, aes(x = max_temp, y = .fitted, group = geno)) +
@@ -459,7 +457,7 @@ drc_ed50_fig2 <- drcs +
                   xlim = c(32, 35.8), ylim = c(0.01, 0.01), segment.size = 0.1, seed = 5, segment.linetype = 3) +
   labs(x = "Temperature (°C)", y = "Fv/Fm"); drc_ed50_fig2
   
-ggsave(drc_ed50_fig2, filename = "output/drc_ed50.png", width = 80, height = 60, units = "mm")
+# ggsave(drc_ed50_fig2, filename = "output/drc_ed50.png", width = 80, height = 60, units = "mm")
 
 # cbass_classic_results <- plot_grid(drc_ed50_fig2, classicresfig, nrow = 1, labels = "auto")
 # ggsave(cbass_classic_results, filename = "output/cbass_classic_results2.png", 
@@ -511,8 +509,15 @@ rack_pos %>%
   count() %>%
   print(n= nrow(.))
 
-rack_pos %>% filter(frag_id == "5 7")
-rack_pos %>% filter(frag_id == "4 7")
+rack_pos %>% filter(frag_id == "13 7")
+rack_pos %>% filter(frag_id == "3 7")
+
+
+# on 2022-12-10, frag 13-7 was written down on position maps twice, and 3-7 was not written down. no way to know which was really the 13-7, so need to omit both of those data points
+md <- md %>%
+  filter(!(date == "2022-12-10" & frag_id == "13 7")) %>%
+  # on 2022-12-12, frag 2-3 was written twice, as 12-3 was not written down. 
+  filter(!(date == "2022-12-12" & frag_id == "2 3"))  # potentially resolvable from hard copy written position map
 ```
 
 ### Import I-PAM data
@@ -556,10 +561,10 @@ pam6 <- pam5 %>%
   mutate(position = ceiling(as.numeric(aoi)/2)) %>%
   ungroup()
 
-pam7 <- full_join(pam6, md, by = c("date", "rack_no", "position"))
+pam7 <- right_join(pam6, md, by = c("date", "rack_no", "position"))
 ```
 
-### Plot figure for classic results
+### Plot decline in Fv/Fm over time for classic experiment
 ```{r}
 pam8 <- pam7 %>%
   separate(frag_id, into = c("genotype", "frag")) 
@@ -573,16 +578,23 @@ fvfm_summary <- finalpam %>%
     group_by(date, treatment, genotype) %>%
     summarise(fvfm_avg = mean(value))
 
-# Plot
-myplot <- ggplot(finalpam, aes(x = date, y = value, color = rev(treatment), asp = 1)) +
-  geom_point(aes(shape = rev(treatment)), alpha = 0.25) +
+# Plot decline in Fv/Fm over whole experiment for each colony
+myplot <- ggplot(finalpam, aes(x = date, y = value, color = treatment, asp = 1)) +
+  geom_point(aes(shape = treatment), alpha = 0.25) +
   scale_shape_manual(values = c(15, 16, 6, 11)) +
-  facet_wrap(~genotype) +
+  facet_wrap(~as.numeric(genotype)) +
   geom_line(aes(y = fvfm_avg), data = fvfm_summary) +
+  scale_color_manual(values = c("#00BFC4", "#F8766D")) +
+  scale_x_date(date_breaks = "1 day", date_labels = "%b %e") +
   theme_custom() +
+  labs(x = "Date", y = "Fv/Fm") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   theme(legend.position = "none"); myplot
 
+ggsave(myplot, filename = "output/FigureS2.png", 
+       width = 183, height = 183, units = "mm")
 
+# Get average Fv/Fm at end of classic experiment, and plot for each genotype in order of greatest to least decline 
 library(lme4)
 mod <- lmer(value ~ treatment * genotype + (1|tank) + (1|frag), data = filter(finalpam, date == "2022-12-13"))
 car::Anova(mod)
@@ -609,13 +621,13 @@ classicresfig <- res %>%
   theme(legend.position = "none") +
   labs(x = "Genet", y = "Fv/Fm"); classicresfig
 
-ggsave(classicresfig, filename = "output/classicresfig.png", width = 80, height = 80, units = "mm")
+#ggsave(classicresfig, filename = "output/classicresfig.png", width = 80, height = 80, units = "mm")
 ```
 
 ### Combined figure with CBASS and classic results
 ```{r}
 cbass_classic_results <- plot_grid(drc_ed50_fig2, classicresfig, nrow = 1, labels = "auto")
-ggsave(cbass_classic_results, filename = "output/cbass_classic_results2.png", 
+ggsave(cbass_classic_results, filename = "output/Figure2.png", 
        width = 183, height = 80, units = "mm")
 ```
 
@@ -627,34 +639,103 @@ ggsave(cbass_classic_results, filename = "output/cbass_classic_results2.png",
 ```{r}
 # Get decline in classic for each geno for each day
 library(lme4)
-mod <- lmer(value ~ treatment * genotype * factor(date) + (1|tank) + (1|frag), 
-            data = filter(finalpam, date >= as_date("2022-12-06")))
+mod <- lmer(value ~ treatment:genotype * factor(date) + (1|tank) + (1|frag), 
+            data = finalpam)
 car::Anova(mod)
 library(emmeans)
 emm <- emmeans(mod, specs = "treatment", by = c("genotype", "date"))
 diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
 diffsres <- tibble(data.frame(diffs))
 
+# Try nesting by date and fitting separate models for each date
+out <- finalpam %>%
+  group_by(date) %>%
+  nest() %>%
+  mutate(lmer = map(data, ~lmer(value ~ treatment * genotype + (1|tank) + (1|frag), data = .)),
+         lm = map(data, ~lm(value ~ treatment * genotype, data = .)),
+         emmlmer = map(lmer, ~emmeans(., specs = "treatment", by = "genotype")),
+         emmlm = map(lm, ~emmeans(., specs = "treatment", by = "genotype")),
+         diffslmer = map(emmlmer, ~rbind(contrast(., "trt.vs.ctrl"), adjust = "none")),
+         diffsreslmer = map(diffslmer, ~tibble(data.frame(.))),
+         diffslm = map(emmlm, ~rbind(contrast(., "trt.vs.ctrl"), adjust = "none")),
+         diffsreslm = map(diffslm, ~tibble(data.frame(.))))
+
 # Combine declines in Fv/Fm on each day with CBASS data
 cbass <- fed50 %>%
   mutate(genotype = factor(geno)) %>%
   select(genotype, estimate, std.error)
 
-both <- full_join(cbass, diffsres, by = "genotype", suffix = c(".ed50", ".dfvfm"))
+both <- full_join(cbass, out %>% unnest(diffsreslm), by = "genotype", suffix = c(".ed50", ".dfvfm"))
+eachPB <- both %>%
+  select(date, genotype, estimate.ed50, std.error.ed50 = std.error, estimate.dfvfm, std.error.dfvfm = SE) %>%
+  mutate(estimate.dfvfm2 = estimate.dfvfm-0.2) %>%
+  group_by(date) %>%
+  nest() %>%
+  mutate(PBreg = map(data, ~mcreg(.$estimate.ed50, -.$estimate.dfvfm2,
+                                  method.reg = "PaBa",  method.ci = "bootstrap", nsamples = 9999)),
+         PBslope = map_dbl(PBreg, ~.@para[2,1]),  # Get slope estimate and CI
+         PBLCI = map_dbl(PBreg, ~.@para[2,3]), 
+         PBUCI = map_dbl(PBreg, ~.@para[2,4]), 
+         PBfit = map(PBreg, ~calcResponse(., x.levels = seq(min(both$estimate.ed50), max(both$estimate.ed50), 0.01), 
+                      alpha = 0.1) %>% as_tibble()))
+
+eachPBfit <- eachPB %>%
+  unnest(PBfit)
 
 # Plot decline in Fv/Fm on each day vs. CBASS ED50
-ggplot(both, aes(x = estimate.ed50, y = estimate.dfvfm)) +
-  geom_point() +
-  geom_smooth(method = "lm", se = FALSE) +
+eachday <- ggplot(both, aes(x = estimate.ed50, y = estimate.dfvfm)) +
+  #geom_smooth(method = "lm", se = FALSE) +
+  geom_ribbon(data = eachPBfit, aes(x = X, ymin = -(Y.LCI-0.2), ymax = -(Y.UCI-0.2)),
+              inherit.aes = FALSE, fill = "gray", alpha = 0.6) +
+  geom_line(data = eachPBfit, aes(x = X, y = -(Y - 0.2))) +
+  geom_point(size = 1) +
+  geom_errorbar(aes(xmin = estimate.ed50 - std.error, xmax = estimate.ed50 + std.error),
+                lwd = 0.25) +
+  geom_errorbar(aes(ymin = estimate.dfvfm - SE, ymax = estimate.dfvfm + SE),
+                lwd = 0.25) +
+  geom_hline(yintercept = 0, linetype = 2) +
   facet_wrap(~date) +
+  annotate("text", x = 35.75, y = -0.45, label = "Spearman: ", size = 2, adj = 1) +
+  annotate("text", x = 35.75, y = -0.5, label = "Pearson: ", size = 2, adj = 1) +
+  stat_cor(method = "spearman", label.y = -0.45, label.x = 35.75, size = 2) + 
+  stat_cor(method = "pearson", label.y = -0.5, label.x = 35.75, size = 2) +
   theme_custom() +
-  labs(x = "CBASS ED50 (°C)", y = "Classic ∆Fv/Fm (heated - control)")
+  labs(x = "CBASS ED50 (°C)", y = "Classic ∆Fv/Fm (heated - control)"); eachday
+
+eachPB %>%
+  ggplot(aes(x = date, y = -PBslope)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = -PBLCI, ymax = -PBUCI)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  theme_custom()
+
+
+ggsave(eachday, filename = "output/FigureS3.png", 
+        width = 183, height = 183, units = "mm")
+
+mod <- lm(value ~ treatment * factor(date), data = finalpam)
+emm <- emmeans(mod, specs = "treatment", by = "date")
+diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
+diffs  # sig effect of heat on day 1, but no effect of ed50 until
+
+mod <- lm(value ~ treatment * factor(date), data = finalpam)
+emm <- emmeans(mod, specs = "treatment", by = "date")
+diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
+diffs  # sig effect of heat on day 1, but no effect of ed50 until
+
+test <- finalpam %>% left_join(cbass)
+mod <- lm(value ~ treatment * estimate * factor(date), data = test)
+emm <- emtrends(mod, specs = "treatment", var = "estimate", by = "date")
+summary(emm)
+diffs <- rbind(contrast(emm, "trt.vs.ctrl"), adjust = "none")
+diffs  # sig effect of heat on day 1, but no effect of ed50 until 12/12
 ```
+
 
 ## Compare for end of classic experiment
 ```{r}
 # Get decline in classic for each geno for final day
-mod <- lmer(value ~ treatment * genotype + (1|tank) + (1|frag), 
+mod <- lm(value ~ treatment * genotype, 
             data = filter(finalpam, date == as_date("2022-12-13")))
 car::Anova(mod)
 emm <- emmeans(mod, specs = "treatment", by = "genotype")
@@ -664,7 +745,7 @@ diffsres <- tibble(data.frame(diffs))
 classic <- diffsres %>%
   select(genotype, estimate, std.error = SE)
 
-# Combine final declines in Fv/Fm with CBASS data
+# Combine final declines in Fv/Fm in classic with CBASS data
 final <- full_join(cbass, classic, by = "genotype", suffix = c(".ed50", ".dfvfm"))
   
 # Linear model / OLS
@@ -700,6 +781,17 @@ comp <- ggplot(final, aes(x = estimate.ed50, y = estimate.dfvfm)) +
   theme_custom() +
   labs(x = "CBASS ED50 (°C)", y = "Classic ∆Fv/Fm (heated - control)"); comp
 
-ggsave(comp, filename = "output/cbass_classic_comparison.png", width = 80, height = 80, units = "mm")
+ggsave(comp, filename = "output/Figure3.png", width = 80, height = 80, units = "mm")
+```
+
+```{r}
+# calculate variance of cbass vs. classic?
+both %>% 
+  distinct(date, genotype, estimate.ed50, estimate.dfvfm) %>%
+  group_by(date) %>%
+  summarize(cv.ed50 = sd(estimate.ed50)/mean(estimate.ed50),
+            cv.dfvfm = sd(-estimate.dfvfm)/mean(-estimate.dfvfm))
+
+
 ```
 
