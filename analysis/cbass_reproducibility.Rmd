@@ -1,7 +1,7 @@
 ---
-title: "Reproducibility test"
-author: "ross"
-date: "8/25/2022"
+title: "Reproducibility of CBASS assays"
+author: "Ross Cunning"
+date: "10/3/2024"
 output: html_document
 editor_options: 
   chunk_output_type: console
@@ -44,23 +44,11 @@ ed50_202006 <- read_csv("data/reproducibility/processed/ed50_202006.csv") %>%
   mutate(nursery = case_when(nursery == "RR" ~ "rrt", TRUE ~ tolower(nursery))) %>%
   select(nursery, geno = name, ed50 = estimate_ed50, std.error = std_error_ed50) %>%
   mutate(date = "202006")
-# 
-# ### old data that was in repo but dont know how it was made
-# ed50_2020_old <- read_csv("~/Projects/CBASS_FL_Acer/data/processed/ed50_values.csv") %>%
-#   mutate(nursery = case_when(nursery == "mote" ~ "mml", TRUE ~ tolower(nursery))) %>%
-#   select(nursery, geno, ed50_2020 = ed50, std.error_2020 = std.error)
 
-
-
-### new Oct 2020 data freshly exported from CBASS_FL_Acer repo
+### Oct 2020 data 
 ed50_202010 <- read_csv("data/reproducibility/processed/ed50_202010.csv") %>%
   mutate(nursery = case_when(nursery == "RR" ~ "rrt", TRUE ~ tolower(nursery))) %>%
   select(nursery, geno = name, ed50 = ed50, std.error = std.error)
-
-# # COmparing mysterious old data to 'new'
-# ed50comp <- full_join(ed50_202010, ed50_2020_old, by = c("nursery", "geno"))
-# ggplot(ed50comp, aes(x = ed50, y = ed50_2020, color = nursery)) + geom_point() + geom_label(aes(label = geno))
-# # The 'new' data match to the original dose response curves in Rmarkdowns from the original project. So, dismiss the mysterious old data as erroneous....
 
 # In 2020, some genotypes were run multiple times from the same nursery, indicated by (A), (B), (C), etc.
 # Group these, and get the average ED50 for 2020 for each genotype from each nursery
@@ -88,42 +76,6 @@ longdf <- bind_rows(ed50_202006, ed50_202010, ed50_202109) %>%
   group_by(nursery, geno) %>%
   filter(n() > 1) %>%
   ungroup()
-```
-
-# New analysis 2023
-
-### quick side-analysis of UM Acer to help them identify candidates for selective breeding
-```{r}
-um <- bind_rows(
-  filter(ed50_202010, nursery == "um"),
-  filter(ed50_202109, nursery == "um")
-) %>%
-  pivot_wider(names_from = date, values_from = c(ed50, std.error)) %>%
-  rowwise() %>%
-  mutate(mean_ed50 = mean(c(ed50_202010, ed50_202109), na.rm = TRUE))
-
-genokey <- read_csv("~/Projects/CBASS_FL_Acer/data/genotype_name_key.csv")
-um %>%
-  left_join()
-write_csv(um, path = "um_ed50s.csv")
-
-
-kjs <- filter(ed50_202010, nursery == "nsu")
-```
-
-
-
-## Prefilter data based on ED50 std.error
-```{r}
-# # Identify lower quality data as highest 10% standard error of ED50 parameter estimates
-# outliers <- longdf %>%
-#   group_by(nursery, geno) %>%
-#   summarize(meanse = mean(std.error)) %>%
-#   ungroup() %>%
-#   filter(meanse > quantile(meanse, 0.9))
-# 
-# # Remove genotypes with highest 10% standard error of ED50 parameter estimates
-# longdf <- longdf %>% filter(!geno %in% outliers$geno)
 ```
 
 # Plot and analyze unadjusted data
@@ -295,38 +247,6 @@ ggsave(repro.fig, filename = "output/Figure4.png", width = 183, height = 85, uni
 
 # How confident can we be in comparing 2 individuals or 2 groups of corals based on one CBASS test?
 ```{r}
-####
-# GET 2 RANDOM GROUPS OF N CORALS. calc mean diff btw groups in 202010, 202109 (and 202006).
-# Look at value of mean difference in 202109 (and 202006) vs. 202010, and get pred. interval.
-
-# Get subset of genos spanning equal bins across range of oct2020ed50_adj distribution
-# oct2010 <- out %>% filter(date == "202010") 
-# bins <- oct2010 %>%
-#   mutate(bin = cut(ed50_adj, breaks = seq(min(ed50_adj), max(ed50_adj), length.out = 10), 
-#                    include.lowest = TRUE))
-# bins %>% count(bin)
-# set.seed(4)
-# subset <- bins %>% 
-#   group_by(bin) %>%
-#   slice_sample(n = 8)  # 4 genos per bin = 36 genos for simulations, including all top and bottom genos
-
-# # Get top vs bot genos?
-# outwide <- out %>%
-#   pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) 
-# top25 <- outwide %>%
-#   arrange(ed50_adj_202010) %>%
-#   tail(20) %>% drop_na(ed50_202109)
-# bottom25 <- outwide %>%
-#   arrange(ed50_adj_202010) %>%
-#   head(20) %>% drop_na(ed50_202109)
-# 
-# topbot.unadj <- bind_rows(top25, bottom25) %>%
-#   select(geno, `202010` = ed50_202010, `202006` = ed50_202006, `202109` = ed50_202109) %>%
-#   pivot_longer(c(`202006`, `202109`)) %>% drop_na()
-# topbot.adj <- bind_rows(top25, bottom25) %>%
-#   select(geno, `202010` = ed50_adj_202010, `202006` = ed50_adj_202006, `202109` = ed50_adj_202109) %>%
-#   pivot_longer(c(`202006`, `202109`)) %>% drop_na()
-
 # Format input dataframes
 indf.unadj <- out %>%
   #filter(geno %in% subset$geno) %>%   # use subset only?
@@ -481,148 +401,12 @@ probplot <- ggplot(allprob, aes(x = absdiff.1, y = fit)) +
   labs(x = "Difference in ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
 probplot
 
-ggsave(probplot, filename = "output/probplot.png", width = 60, height = 60, units = "mm")
+ggsave(probplot, filename = "output/Figure5.png", width = 60, height = 60, units = "mm")
 
 
 allprob %>% group_by(set, groupsize) %>%
   filter(fit > 0.9) %>%
   summarize(min(absdiff.1))
-
-range(longdf$ed50)
-```
-
-# What if you pick top ten vs. bottom ten.
-```{r}
-df2 <- out %>%
-  pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) %>%
-  select(geno, `202010` = ed50_202010, `202006` = ed50_202006, `202109` = ed50_202109) %>% 
-  pivot_longer(c(`202006`, `202109`)) %>% drop_na()
-df2adj <- out %>%
-  pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) %>%
-  select(geno, `202010` = ed50_adj_202010, `202006` = ed50_adj_202006, `202109` = ed50_adj_202109) %>% 
-  pivot_longer(c(`202006`, `202109`)) %>% drop_na()
-
-top10 <- df2adj %>%
-  arrange(-`202010`) %>%
-  slice_head(n = 10)
-bot10 <- df2adj %>%
-  arrange(-`202010`) %>%
-  slice_tail(n = 10)
-
-bind_rows(top10, bot10) %>%
-  ggplot(aes(x = `202010`, y = value)) +
-  geom_point()
-```
-
-
-
-
-
-
-
-
-# What if you pick N genos from top and X from bottom half from test 1, then retest
-##### This wasn't working for some reason...
-```{r}
-# Format input dataframes
-indf.unadj <- out %>%
-  #filter(geno %in% subset$geno) %>%   # use subset only?
-  pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) %>%
-  select(geno, `202010` = ed50_202010, `202006` = ed50_202006, `202109` = ed50_202109) %>% 
-  pivot_longer(c(`202006`, `202109`)) %>% drop_na()
-
-
-
-# Function to get tops and bottoms halfs and then compare them
-reprun <- function(df, nsim, groupsize) {
-  # Arrange input data in order of ED50 in Test 1
-  df.ord <- df %>% arrange(-`202010`)
-  # Get top half and bottom half of dataset
-  tops <- slice_head(df.ord, n = floor(nrow(df.ord) / 2))
-  bottoms <- slice_tail(df.ord, n = floor(nrow(df.ord) / 2))
-  # Run comparisons
-  replicate(nsim, ran(tops, bottoms, groupsize), simplify = FALSE)
-}
-# Function to compare 2 random groups of specified size from top vs. bot
-ran <- function(tops, bottoms, groupsize) {
-  t <- tops %>% slice_sample(n = groupsize)
-  b <- bottoms %>% slice_sample(n = groupsize)
-  g <- bind_rows(t, b) %>% mutate(group = c(rep(1, groupsize), rep(2, groupsize)))
-  r <- suppressMessages(g %>% group_by(group) %>% 
-    summarize(mean.1 = mean(`202010`), mean.2 = mean(value)) %>%
-    summarize_all(diff) %>%
-    mutate(absdiff.1 = abs(mean.1), meandiff.2 = mean.2 * sign(mean.1)))
-  return(r)
-}
-
-# Run simulations on unadjusted ED50 data
-library(furrr)
-set.seed(8)
-runres.unadj <- tibble(groupsize = c(1,3,5)) %>%
-  mutate(runout = future_map(groupsize, ~reprun(indf.unadj, 10000, groupsize = .x)),
-         runout = map(runout, ~map_dfr(.x, bind_rows)),
-         fit = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
-         pred = map(fit, ~data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-                                                   interval = "prediction", level = 0.9))),
-         pred = map(pred, ~ .x %>% mutate(absdiff.1 = seq(0, 2, 0.01))))
-# Fit model for re-test showing same rank as a function of initial test difference
-runres.unadj <- runres.unadj %>%
-  mutate(mod = map(runout, ~glm(meandiff.2 > 0 ~ absdiff.1, data = .x, family = "binomial")),
-         prob = map(mod, ~ data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-                                                    type = "response"))),
-         prob = map(prob, ~ .x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
-         
-
-# Figure showing probability of same rank order in re-test
-allprob.unadj <- runres.unadj %>%
-  select(groupsize, prob) %>%
-  unnest(prob)
-
-ggplot(allprob.unadj, aes(x = absdiff.1, y = fit)) +
-  geom_line(aes(lty = factor(groupsize))) +
-  scale_x_continuous(breaks = seq(0, 2, 0.25)) +
-  scale_y_continuous(limits = c(0.5, 1)) +
-  theme_custom() +
-  theme(legend.position = c(0.8, 0.2)) +
-  labs(x = "∆ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
-
-
-### ADJUSTED
-# Format input dataframes
-indf.adj <- out %>%
-  #filter(geno %in% subset$geno) %>%   # use subset only?
-  pivot_wider(names_from = "date", values_from = c(ed50, ed50_adj)) %>%
-  select(geno, `202010` = ed50_adj_202010, `202006` = ed50_adj_202006, `202109` = ed50_adj_202109) %>% 
-  pivot_longer(c(`202006`, `202109`)) %>% drop_na()
-# Run simulations on adjusted ED50 data
-set.seed(8)
-runres.adj <- tibble(groupsize = c(1,3,5)) %>%
-  mutate(runout = future_map(groupsize, ~reprun(df = indf.adj, nsim = 10000, groupsize = .x)),
-         runout = map(runout, ~map_dfr(.x, bind_rows)),
-         fit = map(runout, ~lm(meandiff.2 ~ absdiff.1, data = .x)),
-         pred = map(fit, ~data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-                                                   interval = "prediction", level = 0.9))),
-         pred = map(pred, ~ .x %>% mutate(absdiff.1 = seq(0, 2, 0.01))))
-# Fit model for re-test showing same rank as a function of initial test difference
-runres.adj <- runres.adj %>%
-  mutate(mod = map(runout, ~glm(meandiff.2 > 0 ~ absdiff.1, data = .x, family = "binomial")),
-         prob = map(mod, ~ data.frame(fit = predict(.x, newdata = data.frame(absdiff.1 = seq(0, 2, 0.01)),
-                                                    type = "response"))),
-         prob = map(prob, ~ .x %>% mutate(data.frame(absdiff.1 = seq(0, 2, 0.01)))))
-         
-
-# Figure showing probability of same rank order in re-test
-allprob.adj <- runres.adj %>%
-  select(groupsize, prob) %>%
-  unnest(prob)
-
-ggplot(allprob.adj, aes(x = absdiff.1, y = fit)) +
-  geom_line(aes(lty = factor(groupsize))) +
-  scale_x_continuous(breaks = seq(0, 2, 0.25)) +
-  scale_y_continuous(limits = c(0.5, 1)) +
-  theme_custom() +
-  theme(legend.position = c(0.8, 0.2)) +
-  labs(x = "∆ED50 in initial test (°C)", y = "Probability of same rank order in re-test")
 ```
 
 
